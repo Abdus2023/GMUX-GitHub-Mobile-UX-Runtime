@@ -1,0 +1,118 @@
+{
+  "generatedAt": "2026-09-15T17:24:11.123Z",
+  "provenance": "stub workbench mirroring fixtures/*.html — NOT live-host VALIDATED (see VERIFICATION_REPORT.md)",
+  "artifact": "github-dev-mobile.user.js",
+  "version": "0.1.0",
+  "summary": {
+    "buttons": 3,
+    "labelledControls": 3,
+    "candidateSurfaces": 4
+  },
+  "labels": [
+    {
+      "label": "Explorer",
+      "role": "A"
+    },
+    {
+      "label": "Search",
+      "role": "A"
+    },
+    {
+      "label": "Source Control",
+      "role": "A"
+    }
+  ],
+  "roles": {
+    "button": 0,
+    "tab": 0,
+    "tree": 0,
+    "listbox": 0,
+    "textbox": 0,
+    "dialog": 0,
+    "toolbar": 0,
+    "menu": 0
+  },
+  "evidence": [
+    {
+      "surface": "explorer",
+      "evidence": [
+        {
+          "kind": "id",
+          "value": "workbench.view.explorer",
+          "count": 1
+        },
+        {
+          "kind": "aria-label",
+          "value": "Explorer",
+          "count": 1
+        },
+        {
+          "kind": "class",
+          "value": ".explorer-folders-view",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "surface": "search",
+      "evidence": [
+        {
+          "kind": "id",
+          "value": "workbench.view.search",
+          "count": 1
+        },
+        {
+          "kind": "aria-label",
+          "value": "Search",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "surface": "sourceControl",
+      "evidence": [
+        {
+          "kind": "id",
+          "value": "workbench.view.scm",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "surface": "editor",
+      "evidence": [
+        {
+          "kind": "class",
+          "value": ".monaco-editor",
+          "count": 1
+        },
+        {
+          "kind": "semantic",
+          "value": ".monaco-editor[data-uri]",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "surface": "terminal",
+      "evidence": []
+    }
+  ],
+  "discovery": {
+    "explorer": 2,
+    "search": 0,
+    "sourceControl": 0,
+    "editor": 2,
+    "terminal": 0
+  },
+  "capabilities": {
+    "editor": "DETECTED",
+    "explorer": "DETECTED",
+    "search": "NOT_DETECTED",
+    "sourceControl": "NOT_DETECTED",
+    "terminal": "NOT_DETECTED",
+    "activityBar": "DETECTED",
+    "statusBar": "DETECTED",
+    "commandPalette": "UNKNOWN"
+  }
+}

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: terminal</title>
+<!--
+  terminal.html → minimal Terminal observation case.
+  Workbench + bottom panel rendering an xterm terminal.
+  Expected: terminal DETECTED/IDENTIFIED for *observation*; the
+  TerminalSurface stays operationally disabled (open() refuses without
+  actuating) per the v0.1 scope freeze.
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part activitybar">
+    <div class="action-item" id="workbench.view.explorer"><a class="action-label" aria-label="Explorer">Ex</a></div>
+  </div>
+  <div class="part sidebar"></div>
+  <div class="part editor">
+    <div class="monaco-editor" data-uri="file:///src/app.js"><textarea class="inputarea"></textarea></div>
+  </div>
+  <div class="part panel">
+    <div class="terminal-outer-container"><div class="xterm"></div></div>
+  </div>
+  <div class="part statusbar"></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: malformed</title>
+<!--
+  malformed.html → adapter remains safe, no uncaught exception.
+  Deliberately broken markup: unclosed elements, duplicate ids, missing
+  workbench parts, stray text. A real browser error-recovers this into
+  *some* tree; the adapter MUST handle whatever tree results without
+  throwing and MUST degrade capabilities instead of guessing.
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part activitybar">
+    <div class="action-item" id="workbench.view.explorer"><a class="action-label">Missing aria label
+    <div class="action-item" id="workbench.view.explorer"><a class="action-label" aria-label="Explorer">Duplicate id</a></div>
+  <!-- unclosed activitybar, unclosed anchors, no sidebar, no editor part -->
+  <div class="part statusbar">
+stray text node without container
+</div>
+</body>
+</html>

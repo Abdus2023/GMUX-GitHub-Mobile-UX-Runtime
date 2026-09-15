@@ -1,0 +1,99 @@
+{
+  "generatedAt": "2026-09-15T17:24:11.123Z",
+  "provenance": "stub workbench mirroring fixtures/*.html — NOT live-host VALIDATED (see VERIFICATION_REPORT.md)",
+  "artifact": "github-dev-mobile.user.js",
+  "version": "0.1.0",
+  "note": "The registry begins empty in source; entries below carry the 2026-09-15 reconnaissance provenance and stay PROVISIONAL until a live state transition promotes them (§60/§61).",
+  "registry": {
+    "explorer": [
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.explorer\"] .action-label",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "explorer",
+        "status": "PROVISIONAL"
+      },
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.explorer\"]",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "explorer",
+        "status": "PROVISIONAL"
+      }
+    ],
+    "search": [
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.search\"] .action-label",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "search",
+        "status": "PROVISIONAL"
+      },
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.search\"]",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "search",
+        "status": "PROVISIONAL"
+      }
+    ],
+    "sourceControl": [
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.scm\"] .action-label",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "sourceControl",
+        "status": "PROVISIONAL"
+      },
+      {
+        "selector": ".part.activitybar [id=\"workbench.view.scm\"]",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "sourceControl",
+        "status": "PROVISIONAL"
+      }
+    ],
+    "editor": [
+      {
+        "selector": ".monaco-editor textarea.inputarea",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "editor",
+        "status": "PROVISIONAL"
+      },
+      {
+        "selector": ".monaco-editor",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "editor",
+        "status": "PROVISIONAL"
+      }
+    ],
+    "terminal": [
+      {
+        "selector": ".xterm",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "terminal",
+        "status": "PROVISIONAL"
+      },
+      {
+        "selector": ".part.panel .terminal-outer-container",
+        "source": "reconnaissance",
+        "confidence": 2,
+        "observedAt": "2026-09-15",
+        "purpose": "terminal",
+        "status": "PROVISIONAL"
+      }
+    ]
+  }
+}

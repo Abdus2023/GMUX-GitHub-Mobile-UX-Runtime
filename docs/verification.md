@@ -12,10 +12,11 @@ Invariant I-15: **NO EVIDENCE → NO VERIFIED CLAIM.**
 ## 1. Run the automated evidence first
 
 ```bash
-node tests/run-tests.mjs     # pure kernel (113 checks)
-node tests/dom-smoke.mjs     # fake-DOM lifecycle (37 checks)
-node tests/adapter-flow.mjs  # stub workbench adapter operations (50 checks)
-node tests/gates.mjs         # writes diagnostics/gate-evidence.json
+node tests/run-tests.mjs      # pure kernel (113 checks)
+node tests/dom-smoke.mjs      # fake-DOM lifecycle (37 checks)
+node tests/adapter-flow.mjs   # stub workbench adapter operations (50 checks)
+node tests/recon-fixtures.mjs # reconnaissance/fixtures/mutations (126 checks)
+node tests/gates.mjs          # writes diagnostics/gate-evidence.json
 ```
 
 ## 2. Manual live matrix (SPEC §49/§52)
@@ -25,6 +26,8 @@ Status legend: ✅ automated evidence recorded · 🖐 live run pending · ➖ o
 | Gate | Scenario | Status | Expected live evidence |
 |---|---|---|---|
 | G2 | Open `https://github.dev/<owner>/<repo>` | 🖐 | diagnostics header shows `Adapter: github-dev`, shell begins in WAITING→ACTIVE |
+| — | Run `GMUX.inspect()` in the console | 🖐 | structured evidence + readable report: host, reconnaissance counts, per-surface discovery levels, shell/observer state, drift, warnings — answers Q1–Q10 from local evidence only |
+| — | Portrait ↔ landscape rotation | 🖐 | `Orientation:` follows the viewport; shell chrome stays usable; landscape need not be sophisticated in v0.1 |
 | G3 | DevTools phone profile, 360–430 px | 🖐 | `Mode: MOBILE`, header + bottom bar visible |
 | G3 | DevTools 768 px | 🖐 | `Mode: COMPACT`, bottom bar, native titlebar still respected |
 | G3 | Desktop > 1024 px | 🖐 | `Mode: DESKTOP`, shell chrome hidden (`gmux-no-header gmux-no-footer`) |

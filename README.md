@@ -5,16 +5,18 @@ shell (bottom command bar, Explorer/Search/Source-Control drawers, immersive
 editor, Android Back) over the existing **github.dev / VS Code for the Web**
 application. It never re-implements application state.
 
+> **Inspect first. Select second. Operate third. Validate fourth.**
 > **Observe → Normalize → Decide → Mutate → Observe → Validate.**
 > The userscript owns mobile interaction; **GitHub/VS Code Web remains the
 > sole application authority** for files, branches, commits, editors,
 > terminals and credentials (SPEC §4/§5).
 
 - **Primary artifact:** [`github-dev-mobile.user.js`](github-dev-mobile.user.js) — one file, zero build, zero dependencies
-- **Normative contract:** [`SPEC.md`](SPEC.md) (v0.1 Concrete Implementation Contract)
+- **Normative contract:** [`SPEC.md`](SPEC.md) (v0.1 Concrete Implementation Contract) + the inspection-first contract (§7 below)
 - **Verification status:** [`VERIFICATION_REPORT.md`](VERIFICATION_REPORT.md) — **PARTIALLY_VERIFIED**
-- **DOM evidence:** [`docs/dom-evidence.md`](docs/dom-evidence.md) · **Live test recipe:** [`docs/verification.md`](docs/verification.md)
-- **Machine-readable gates:** [`diagnostics/gate-evidence.json`](diagnostics/gate-evidence.json)
+- **DOM evidence:** [`docs/dom-evidence.md`](docs/dom-evidence.md) · **Reconnaissance:** [`docs/reconnaissance.md`](docs/reconnaissance.md) · **Live test recipe:** [`docs/verification.md`](docs/verification.md)
+- **Static fixtures:** [`fixtures/`](fixtures/) (7 minimal HTML recognition cases)
+- **Machine-readable gates:** [`diagnostics/gate-evidence.json`](diagnostics/gate-evidence.json) · **Stub evidence:** [`evidence/`](evidence/)
 
 ## Purpose
 
@@ -71,6 +73,55 @@ The shell is a **command surface** only. No button contains GitHub DOM logic;
 all input flows `intent → command → kernel state → adapter operation → host UI
 → observation → validation` (SPEC §23).
 
+## Inspection-first operation
+
+The host DOM is treated as **unknown until observed**. On bootstrap the
+adapter runs one bounded DOM reconnaissance scan (semantic elements, ARIA
+labels, roles, titles, ids, data attributes, visibility — never an
+indiscriminate DOM dump) and records normalized evidence before any
+host-specific operation is attempted:
+
+```
+github.dev → DOM reconnaissance → normalized observation → capability
+evidence → adapter contract → kernel → mobile shell → observation → validation
+```
+
+- **Selector registry with provenance:** the registry begins empty; every
+  entry carries `{selector, source, confidence, observedAt, purpose}` and
+  stays `PROVISIONAL` until a live state transition promotes it. A selector
+  is evidence, not truth — detection is not operation, operation is not
+  validation.
+- **Discovery levels 0–5:** `UNKNOWN → DETECTED → SEMANTICALLY IDENTIFIED →
+  INTERACTION ATTEMPTED → STATE TRANSITION OBSERVED → REGRESSION-TESTED`,
+  mapped to `UNKNOWN / OBSERVED / OBSERVED+INFERRED / ATTEMPTED / VALIDATED /
+  VALIDATED+REGRESSION-TESTED`. Levels are never skipped silently.
+- **Semantic fallback:** known selector → semantic discovery → `PROVISIONAL`
+  candidate or `BLOCKED`. Ambiguous candidates refuse to guess.
+- **Drift detection:** a previously matching known selector that stops
+  matching emits `ADAPTER_DRIFT` with fallback guidance and degrades the
+  feature to at most `PARTIALLY_VERIFIED` until revalidated.
+- **Surface abstraction:** `Editor/Explorer/Search/Git/Terminal` surfaces
+  with `detect/open/close/isOpen/observe` and the `UNKNOWN → DETECTED →
+  AVAILABLE → OPEN → CLOSING → AVAILABLE` lifecycle (`DEGRADED` on failure,
+  shown honestly in the UI). Terminal is observed but operationally disabled.
+- **Layout policy:** one centralized `mobile/compact/desktop` presentation
+  table; orientation (`portrait/landscape`), coarse-pointer and touch signals
+  are observed (never user-agent sniffed) and recorded as decision basis.
+- **Navigation stack:** mobile navigation (`[editor]` / `[editor, secondary]`)
+  is independent of browser history and drives Back priority
+  (modal → drawer → secondary → `ALLOW_BROWSER_DEFAULT`, never trapped).
+
+Public runtime namespace (local evidence only, zero network):
+
+```js
+GMUX.version            // "0.1.0"
+GMUX.inspect()          // structured evidence + human-readable console report
+GMUX.getState()         // serializable kernel state snapshot
+GMUX.getCapabilities()  // DETECTED / NOT_DETECTED / UNKNOWN map
+GMUX.reconcile()        // run one reconciliation pass now
+GMUX.disable()          // tear down the shell; host left intact
+```
+
 ## Installation
 
 1. Install a userscript manager (Tampermonkey or Violentmonkey; on Android,
@@ -117,13 +168,16 @@ Disable flag: `gmux:disabled`.
 
 ## Diagnostics
 
-☰ → **Diagnostics** shows version, mode, viewport (plus inferred keyboard
-state), every capability with its evidence level, shell/observer status,
-reconciliation count, warnings, feature-status table and recent events. The
-report is copyable as plain text and requires no network access (SPEC §37).
-The console/dev hook is `window.__GMUX__`
-(`state()`, `diagnostics()`, `dispatch(action)`, `enable()`, `disable()`,
-`poke(reason)`); it only reads local state.
+☰ → **Diagnostics** shows version, mode, orientation, viewport (plus
+interaction signals and inferred keyboard state), every capability with its
+evidence level and discovery level, shell/observer status (including observer
+narrowing), navigation stack, observation/reconciliation counters, drift
+events, warnings, feature-status table and recent events. The report is
+copyable as plain text and requires no network access (SPEC §37). The console
+hook is `GMUX.inspect()` (structured object + readable report); the legacy
+`window.__GMUX__` alias (`state()`, `diagnostics()`, `dispatch(action)`,
+`enable()`, `disable()`, `poke(reason)`) remains for compatibility. Both only
+read local state.
 
 ## Privacy & security (SPEC §48)
 
@@ -136,18 +190,29 @@ operations of any kind.
 ## Verification
 
 ```bash
-node tests/run-tests.mjs     # 113 pure-kernel checks
-node tests/dom-smoke.mjs     # 37 fake-DOM lifecycle/idempotence checks
-node tests/adapter-flow.mjs  # 50 stub-workbench adapter operation checks
-node tests/gates.mjs         # writes diagnostics/gate-evidence.json (G0–G20)
+node tests/run-tests.mjs      # 113 pure-kernel checks
+node tests/dom-smoke.mjs      # 37 fake-DOM lifecycle/idempotence checks
+node tests/adapter-flow.mjs   # 50 stub-workbench adapter operation checks
+node tests/recon-fixtures.mjs # 126 reconnaissance/registry/surface/fixture/mutation checks
+node tests/gates.mjs          # writes diagnostics/gate-evidence.json (G0–G20)
+node tests/gen-evidence.mjs   # regenerates evidence/*.json (optional set)
 ```
 
+Static recognition fixtures live in [`fixtures/`](fixtures/)
+(`baseline`, `explorer`, `search`, `terminal`, `missing-explorer`,
+`changed-label`, `malformed`) — minimal, scriptless DOM cases the adapter
+must handle without a live site. The 7-mutation matrix (ARIA changed, button
+removed, container renamed, element moved/duplicated/hidden, role changed)
+proves the critical invariant: broken recognition degrades with diagnostic
+evidence instead of executing the wrong action.
+
 Current release status: **PARTIALLY_VERIFIED** — kernel, lifecycle,
-idempotence, preference tolerance, capability honesty and the zero-network /
-zero-dependency contracts PASS in automation; live github.dev actuation and
-Android device behavior remain UNTESTED and are deliberately not claimed
-(see [`VERIFICATION_REPORT.md`](VERIFICATION_REPORT.md)). Do not call this
-build “stable” or “production-ready”.
+idempotence, preference tolerance, capability honesty, reconnaissance,
+registry provenance, drift handling, fixture behavior, mutation safety and
+the zero-network / zero-dependency contracts PASS in automation; live
+github.dev actuation and Android device behavior remain UNTESTED and are
+deliberately not claimed (see [`VERIFICATION_REPORT.md`](VERIFICATION_REPORT.md)).
+Do not call this build “stable” or “production-ready”.
 
 ## Known compatibility risks
 
