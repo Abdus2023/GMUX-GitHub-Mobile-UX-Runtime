@@ -1,132 +1,169 @@
-# GMUX — GitHub.dev Mobile UX Runtime
+# GitHub.dev Mobile UX — GMUX userscript v0.1.0
 
-A **dependency-free, mobile-first, observation-driven userscript** that turns
-the desktop-oriented [`github.dev`](https://github.dev) (VS Code for the Web)
-interface into an adaptive mobile development workspace.
+A small, **dependency-free** userscript that layers a mobile interaction
+shell (bottom command bar, Explorer/Search/Source-Control drawers, immersive
+editor, Android Back) over the existing **github.dev / VS Code for the Web**
+application. It never re-implements application state.
 
-> **Observe first. Adapt second. Mutate third. Validate fourth.**
-> The userscript owns mobile interaction; GitHub owns application and
-> repository state.
+> **Observe → Normalize → Decide → Mutate → Observe → Validate.**
+> The userscript owns mobile interaction; **GitHub/VS Code Web remains the
+> sole application authority** for files, branches, commits, editors,
+> terminals and credentials (SPEC §4/§5).
 
-- **Version:** 0.1.0 — normative spec: [`SPEC.md`](SPEC.md)
-- **Artifact:** [`github-dev-mobile.user.js`](github-dev-mobile.user.js)
-  (single file, no build step, no dependencies)
-- **Target:** `github.dev` (which currently redirects to
-  `vscode.dev/github/{owner}/{repo}`), primary device class: Android phones
-- **Evidence log:** [`docs/dom-evidence.md`](docs/dom-evidence.md) ·
-  **Verification:** [`docs/verification.md`](docs/verification.md)
+- **Primary artifact:** [`github-dev-mobile.user.js`](github-dev-mobile.user.js) — one file, zero build, zero dependencies
+- **Normative contract:** [`SPEC.md`](SPEC.md) (v0.1 Concrete Implementation Contract)
+- **Verification status:** [`VERIFICATION_REPORT.md`](VERIFICATION_REPORT.md) — **PARTIALLY_VERIFIED**
+- **DOM evidence:** [`docs/dom-evidence.md`](docs/dom-evidence.md) · **Live test recipe:** [`docs/verification.md`](docs/verification.md)
+- **Machine-readable gates:** [`diagnostics/gate-evidence.json`](diagnostics/gate-evidence.json)
 
----
+## Purpose
 
-## What it is
+Prove the v0.1 architecture on a narrow phone viewport before adding
+sophistication (SPEC §1): a selector-isolated **adapter** feeds a
+selector-free **kernel** (state, commands, reconciliation, diagnostics) that
+drives exactly one **mobile shell**. Shell buttons dispatch *intent*; the
+adapter actuates the *existing* VS Code UI and the reconciler validates the
+observed effect. Nothing is claimed verified without evidence.
 
-An **interaction/presentation adapter** layered over the existing application:
+## Supported host
 
-```
-github.dev  →  Observation Layer  →  Capability Detection  →  Adapter Contract
-   →  Mobile UX Kernel (state · commands · lifecycle · scheduling · diagnostics)
-   →  Mobile Shell  →  Existing GitHub / VS Code UI (untouched authority)
-```
+The userscript injects only on:
 
-- One primary surface at a time on phones: **Editor · Files · Search · Git ·
-  Terminal · Settings**, switched from a bottom toolbar, edge gestures, or
-  keyboard.
-- Reuses the *existing* Explorer tree, Search view, Source Control view and
-  terminal — it repositions them, it never clones repository state.
-- Tracks `window.visualViewport` so the shell survives the Android virtual
-  keyboard; keyboard visibility is always reported as `INFERRED`, never faked.
-- Reconciliation-driven: a classified, coalesced `MutationObserver` schedules
-  at most one reconcile per animation frame. **No polling loops.**
-- Reversible: Alt+Shift+G (or ☰ → Disable) tears the shell down without a
-  page reload and leaves the GitHub application intact.
+- `https://github.dev/*` and `https://*.github.dev/*`
+- `https://vscode.dev/github/*` and `https://*.vscode.dev/github/*`
+  (github.dev currently redirects to the vscode.dev runtime)
 
-## What it is not (explicit non-goals)
+Host detection is independent of DOM detection and runs **before any DOM
+mutation** (SPEC §7). Any other site is classified `UNSUPPORTED_TARGET` and
+left completely untouched. There is no claim of compatibility with
+github.com, other VS Code Web routes, or future host DOM that has not been
+observed (SPEC §59).
 
-Not a Git client (no commit/push/pull/branch/merge logic), not a repository
-synchronizer, not a second editor or terminal, not a frontend framework, not
-a telemetry source. It performs **zero network requests** and stores only UI
-preferences in `localStorage` (versioned schema, corruption-tolerant).
+## v0.1 scope
 
-## Install
+**Included:** bootstrap/host detection · viewport classification · capability
+detection · adapter contract · kernel state & command dispatch ·
+MutationObserver-driven idempotent reconciliation · exactly-one mobile shell ·
+bottom command bar · editor immersive presentation · Explorer drawer · Search
+surface · Source Control surface · Android Back · preferences · diagnostics.
 
-1. Install a userscript manager (Tampermonkey, Violentmonkey, or a
-   Greasemonkey-compatible manager; on Android, e.g. Firefox + Tampermonkey).
-2. Open [`github-dev-mobile.user.js`](github-dev-mobile.user.js) and let the
-   manager install it (matches `github.dev/*`, `*.github.dev/*` and
-   `vscode.dev/github/*`).
-3. Open any repository on `https://github.dev/…` on a narrow viewport.
+**Explicitly deferred (not implemented in v0.1):** terminal optimization
+(terminal surface is detected but **disabled by default**), gesture
+navigation (the flag is **off** and no gesture code path is wired in the
+runtime), advanced keyboard shortcuts, performance instrumentation, complex
+animations, repository/Git automation, remote services, cloud sync.
+
+## Feature flags (SPEC §36)
+
+| Flag | v0.1 | Meaning |
+|---|---|---|
+| `mobileShell` | `true` | mount the shell root `#github-mobile-ux` |
+| `immersiveEditor` | `true` | hide minimap / breadcrumbs / desktop activity rail on mobile |
+| `explorerDrawer` | `true` | reposition the existing VS Code sidebar as a drawer |
+| `searchSurface` | `true` | reuse the existing Search view |
+| `sourceControlSurface` | `true` | reuse the existing Source Control view |
+| `terminalSurface` | **`false`** | github.dev web host provides no terminal (inference); control is disabled and honest in diagnostics |
+| `gestures` | **`false`** | deferred from v0.1; no pointer/gesture handlers are installed |
+| `androidBack` | `true` | history-layered Back: modal → quick input → drawer → editor → browser default |
+| `diagnostics` | `true` | in-shell evidence report |
+
+The shell is a **command surface** only. No button contains GitHub DOM logic;
+all input flows `intent → command → kernel state → adapter operation → host UI
+→ observation → validation` (SPEC §23).
+
+## Installation
+
+1. Install a userscript manager (Tampermonkey or Violentmonkey; on Android,
+   e.g. Firefox + Tampermonkey).
+2. Open [`github-dev-mobile.user.js`](github-dev-mobile.user.js) raw and let
+   the manager install it. Metadata: `@grant none`, `@noframes`, no
+   `@require` / `@resource`.
+3. Open a repository at `https://github.dev/<owner>/<repo>` on a narrow
+   viewport (< 600 CSS px classifies MOBILE; 600–1024 COMPACT; > 1024
+   DESKTOP, where the shell stays minimally intrusive).
 
 ## Use
 
 | Input | Behavior |
 |---|---|
-| Bottom toolbar | Files 📁 · Search 🔍 · Git ⎇ · Terminal ▣ · More ⚙ (icons always carry accessible names) |
-| Header | ☰ GMUX menu · current file (tap = focus editor) · ⋮ editor actions |
-| Edge swipes | left edge →→ Files · right edge ←← close surface · bottom edge ↑ Terminal · top edge ↓ close surface (never over the editor; insufficient confidence = no action) |
-| Escape | closes dialogs, then closes the active surface |
-| Alt+Shift+G | disable / re-enable the shell (works even after disable) |
-| ☰ → Diagnostics | capabilities, viewport/keyboard evidence, feature statuses, failure log, copyable report |
+| Bottom bar: **Files / Search / Git / Term. / More** | dispatches `OPEN_SURFACE` intent; tapping the active surface again closes it |
+| Header ☰ | menu: settings, diagnostics, immersive/bottom-bar toggles, disable |
+| Header file name | focuses the editor via Monaco's own `textarea.inputarea` (no synthesized editor clicks) |
+| Header ⋮ | editor actions delegated to the host: Go to file, Command palette, VS Code settings |
+| Android hardware Back | close GMUX modal → dismiss host quick input → close drawer/secondary surface → return to editor; with nothing owned, the browser default is allowed (Back is never trapped) |
+| Escape | same priority as Back, except it yields to Monaco inside protected editor regions |
+| **Alt+Shift+G** | disable / re-enable the shell without a page reload |
 
-The Terminal button is **disabled unless a terminal is actually detected** —
-on `github.dev`/`vscode.dev` the host does not provide one, and GMUX reports
-`UNSUPPORTED` instead of advertising a broken button.
+Preferences stored: mode (`auto|mobile|compact|desktop`), `immersive`,
+`preferredSurface`, `bottomBar` under `localStorage` key `gmux:prefs:v1`.
+Disable flag: `gmux:disabled`.
 
-## Verification status (evidence-based, spec §35)
+## Failure behavior
 
-Per SPEC §36, *no evidence → no verified claim*. Kernel logic is covered by
-automated suites; live-runtime behavior awaits the manual matrix in
-[`docs/verification.md`](docs/verification.md) and is deliberately **not**
-claimed verified yet.
+- Capabilities are `DETECTED / NOT_DETECTED / UNKNOWN`; `UNKNOWN` is never
+  silently treated as false (SPEC §12). Detection is separate from operation
+  validation (SPEC §13).
+- Every adapter operation returns a structured result
+  `{ ok, operation, reason?, evidence: { elementFound, invoked, stateChanged,
+  level } }` — success is never implied by a selector match alone (SPEC §9/§10).
+- An unavailable optional capability disables only that feature, emits a
+  diagnostic warning, and leaves all other features working (SPEC §46/§47).
+- Malformed preferences produce `PREFERENCE_PARSE_FAILED`, default
+  preferences, and continue startup (SPEC §40).
+- Multiple shell roots trigger `SHELL_DUPLICATION` and convergence to exactly
+  one (SPEC §21, invariant I-01).
+- No workbench after 30 s → `UNSUPPORTED_LAYOUT`/`APPLICATION_NOT_DETECTED`,
+  degraded reactive waiting — no steady-state polling is ever used (SPEC §27).
 
-| Feature | Status | Basis |
-|---|---|---|
-| Kernel units (modes, transitions, prefs, scheduler, commands, capabilities, gestures, planner) | VERIFIED | 77 unit checks, `node tests/run-tests.mjs` |
-| Bootstrap / lifecycle / disable-recovery | VERIFIED | 17 smoke checks, `node tests/dom-smoke.mjs` |
-| Mobile viewport detection | PARTIALLY_VERIFIED | visualViewport logic unit-tested; device confirmation pending |
-| Editor immersive mode | PARTIALLY_VERIFIED | minimap hiding layout-safe by construction; live confirmation pending |
-| Explorer drawer / Search / Source Control surfaces | PARTIALLY_VERIFIED | reposition-only design; live confirmation pending |
-| Terminal surface | BLOCKED on github.dev | host does not ship a terminal (inference, honestly reported) |
-| Gesture navigation | PROVISIONAL | conservative edge swipes; device confirmation pending |
-| Git operations | OUT_OF_SCOPE | GitHub/VS Code remains authoritative |
-| Unknown future GitHub DOM | BLOCKED | no claims beyond observed evidence |
+## Diagnostics
 
-## Develop
+☰ → **Diagnostics** shows version, mode, viewport (plus inferred keyboard
+state), every capability with its evidence level, shell/observer status,
+reconciliation count, warnings, feature-status table and recent events. The
+report is copyable as plain text and requires no network access (SPEC §37).
+The console/dev hook is `window.__GMUX__`
+(`state()`, `diagnostics()`, `dispatch(action)`, `enable()`, `disable()`,
+`poke(reason)`); it only reads local state.
+
+## Privacy & security (SPEC §48)
+
+No network requests, no telemetry, no remote resources, no external runtime
+dependencies (statically enforced by `tests/gates.mjs`). The script never
+reads or writes tokens, cookies, passwords, Git credentials or authorization
+state, and never transmits repository or editor content. It performs no Git
+operations of any kind.
+
+## Verification
 
 ```bash
-node tests/run-tests.mjs   # kernel unit suite
-node tests/dom-smoke.mjs   # boot/lifecycle smoke suite (fake DOM)
+node tests/run-tests.mjs     # 113 pure-kernel checks
+node tests/dom-smoke.mjs     # 37 fake-DOM lifecycle/idempotence checks
+node tests/adapter-flow.mjs  # 50 stub-workbench adapter operation checks
+node tests/gates.mjs         # writes diagnostics/gate-evidence.json (G0–G20)
 ```
 
-No package manager, no build, no network. The userscript also exports its pure
-kernel for Node (`module.exports` guard) — in the browser nothing extra is
-exposed beyond the documented `window.__GDMUX__` dev hook
-(`enable() / disable() / diagnostics() / state()`).
+Current release status: **PARTIALLY_VERIFIED** — kernel, lifecycle,
+idempotence, preference tolerance, capability honesty and the zero-network /
+zero-dependency contracts PASS in automation; live github.dev actuation and
+Android device behavior remain UNTESTED and are deliberately not claimed
+(see [`VERIFICATION_REPORT.md`](VERIFICATION_REPORT.md)). Do not call this
+build “stable” or “production-ready”.
 
-### Repository layout
+## Known compatibility risks
 
-```
-github-dev-mobile.user.js   the release artifact (single file)
-SPEC.md                     normative specification (Prompt Instructions Pack)
-tests/run-tests.mjs         dependency-free kernel unit suite
-tests/dom-smoke.mjs         dependency-free boot/lifecycle smoke suite
-docs/dom-evidence.md        OBSERVED/INFERRED/VALIDATED selector evidence log
-docs/verification.md        live test matrix, regressions, release gates
-```
-
-### Inside the single file
-
-`§A` identity/versions · `§B` vocabulary & failure codes · `§C` pure kernel
-(no DOM, no GitHub selectors — unit-tested) · `§D` **github-dev adapter**
-(*all* GitHub/VS Code DOM knowledge) · `§E` namespaced adapter stylesheet
-(`.gdmux-*`, controlled z-ladder 900–950) · `§F–§J` shell, viewport, input,
-reconciler, lifecycle · `§K` bootstrap/teardown/exports.
-
-## Security & privacy
-
-No credentials, cookies, tokens or repository content are ever read, stored or
-transmitted. There is no network access of any kind. Preferences are the only
-persisted data (`gdmux:prefs:v1`), plus a disable flag (`gdmux:disabled`).
+- Selectors for activity-bar items, sidebar view content and workbench parts
+  are recorded OBSERVED/INFERRED from `microsoft/vscode` sources and a fetched
+  github.dev page (2026-09-15) but are not yet VALIDATED on a live session.
+- Synthesized keybindings are a fallback path; some mobile browsers may
+  deliver keyboard events differently.
+- Drawer/keyboard positioning relies on `visualViewport`; very old browsers
+  fall back to window resize (`VIEWPORT_UNAVAILABLE`).
+- `pushState`/`replaceState` are never monkey-patched; if the host interleaves
+  its own history entries while an owned surface is open, Back yields to the
+  host entry and re-converges on the next owned entry.
+- Userscript-manager behavior on Android varies; Violentmonkey/Tampermonkey
+  with `@grant none` are the tested-at-metadata targets.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE).

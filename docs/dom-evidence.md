@@ -1,21 +1,23 @@
 # DOM Evidence Log — `github.dev` / VS Code for the Web
 
-This file is the observation record required by SPEC.md §51 ("Inspect the
-current `github.dev` runtime before writing selectors. Record observed DOM
-evidence."). Adapter selectors are only justified by entries here.
+This file is the observation record behind every adapter selector. SPEC
+§58 rules 1/4 require inspecting before modifying and forbid inventing
+selectors without inspection evidence; if a selector here cannot be
+confirmed live, §59 says stop and report BLOCKED rather than guessing.
 
-Evidence levels follow SPEC.md §34:
+Evidence levels follow SPEC §11:
 
 - **OBSERVED** — directly seen in a live fetch of the runtime or in the
   authoritative `microsoft/vscode` source on the date noted.
 - **INFERRED** — follows a stable, observed convention but has not yet been
   confirmed interactively on a live session.
-- **VALIDATED** — a command produced the expected observable state on a real
-  device/session. *(Nothing is VALIDATED until the manual matrix in
-  `verification.md` is run; entries will be promoted then.)*
+- **VALIDATED** — an operation produced the expected observable state
+  transition on a real device/session. *(Nothing is VALIDATED until the
+  manual matrix in `docs/verification.md` is run; entries are promoted then.)*
 
 Collection date: **2026-09-15** (UTC). Sources: live fetch of `github.dev`
-(via this environment's page fetcher) and `raw.githubusercontent.com/microsoft/vscode@main`.
+(via this environment's page fetcher) and
+`raw.githubusercontent.com/microsoft/vscode@main`.
 
 ---
 
@@ -23,11 +25,12 @@ Collection date: **2026-09-15** (UTC). Sources: live fetch of `github.dev`
 
 | # | Evidence | Level |
 |---|----------|-------|
-| R1 | Fetching `https://github.dev/microsoft/vscode` resolves to `https://vscode.dev/github/microsoft/vscode`. Page title: *"vscode - Visual Studio Code - github"*. **`github.dev` is currently served by the `vscode.dev` runtime.** | OBSERVED |
-| R2 | The rendered page exposes the VS Code welcome/quick-access overlay with the strings: *"Show All Commands Ctrl+Shift+P"*, *"Go to File Ctrl+P"*, *"Open Settings Ctrl+,",* and *"Drag a view here to display."* — confirming the command palette, quick-open, and settings keybindings exist in this runtime. | OBSERVED |
+| R1 | Fetching `https://github.dev/microsoft/vscode` resolves to `https://vscode.dev/github/microsoft/vscode`. Page title: *“vscode - Visual Studio Code - github”*. **`github.dev` is currently served by the `vscode.dev` runtime.** | OBSERVED |
+| R2 | The rendered page exposes the VS Code welcome/quick-access overlay with the strings: *“Show All Commands Ctrl+Shift+P”*, *“Go to File Ctrl+P”*, *“Open Settings Ctrl+,”*, and *“Drag a view here to display.”* — confirming command palette, quick-open and settings keybindings exist. | OBSERVED |
 
-**Implication:** the userscript `@match` list includes both `github.dev/*`
-(and subdomains) and `vscode.dev/github/*` so it follows the redirect.
+**Implication:** host detection (SPEC §7) accepts `github.dev`,
+`*.github.dev`, and `vscode.dev/github/*` (following the redirect); anything
+else is `UNSUPPORTED_TARGET` and receives no DOM mutation.
 
 ## 2. Workbench root & state classes
 
@@ -38,7 +41,7 @@ From `src/vs/workbench/browser/media/style.css` (OBSERVED):
 | W1 | Root element carries class `.monaco-workbench`. | OBSERVED |
 | W2 | Platform/mode modifiers: `.mac`, `.windows`, `.linux`, `.web`, `.border`, `.fullscreen`, `.hc-black`, `.hc-light`, `.no-shadows`, `.activitybar-right`, `.modal-dialog-visible`, `.file-icons-enabled`, `.underline-links`. | OBSERVED |
 | W3 | Visibility-state class **`.nosidebar`** appears in live selectors (`.monaco-workbench.no-shadows.nosidebar .part.activitybar`). | OBSERVED |
-| W4 | **`.monaco-workbench.web { touch-action: none; overscroll-behavior: none; }`** — the web workbench disables browser pan/zoom and handles touch itself. GMUX gestures therefore must use pointer events on *controlled shell zones only* and must never rely on native scroll over the workbench. | OBSERVED |
+| W4 | **`.monaco-workbench.web { touch-action: none; overscroll-behavior: none; }`** — the web workbench handles touch itself. v0.1 ships **no gesture layer** (`FEATURES.gestures = false`, SPEC §2/§36/§54); the mobile shell only places controls outside the editor and never intercepts editor pointers (§30). | OBSERVED + design consequence |
 | W5 | Sibling state classes `nopanel`, `noauxiliarybar`, `nostatusbar`, `notitlebar`. | INFERRED (same convention as W3) |
 
 ## 3. Parts (layout regions)
@@ -59,8 +62,8 @@ From `activitybarPart.ts` + `style.css` (OBSERVED):
 | A1 | `ActivitybarPart` renders `.action-item` / `.action-label` controls inside `.part.activitybar`; action-bar classes `.monaco-action-bar`, `.action-item.active .action-label`. | OBSERVED |
 | A2 | Constants: `ACTIVITYBAR_WIDTH = 48`, `COMPACT_ACTIVITYBAR_WIDTH = 36`, `ACTION_HEIGHT = 48`. | OBSERVED |
 | A3 | Pinned view containers persist under storage key `workbench.activity.pinnedViewlets2`; `ToggleSidebarVisibilityAction` exists. | OBSERVED |
-| A4 | View-container action ids `workbench.view.explorer`, `workbench.view.search`, `workbench.view.scm`. | INFERRED (stable, long-lived action ids; confirmed on live session pending) |
-| A5 | Accessible names / `aria-label` on `.action-label` elements begin with "Explorer", "Search", "Source Control". | INFERRED (ARIA fallback path in adapter) |
+| A4 | View-container action ids `workbench.view.explorer`, `workbench.view.search`, `workbench.view.scm`. | INFERRED (stable long-lived ids; live confirmation pending) |
+| A5 | Accessible names / `aria-label` on `.action-label` elements begin with “Explorer”, “Search”, “Source Control”. | INFERRED (ARIA fallback path in adapter) |
 
 ## 5. Editor (Monaco)
 
@@ -68,7 +71,7 @@ From `activitybarPart.ts` + `style.css` (OBSERVED):
 |---|----------|-------|
 | E1 | Editor surface is `.monaco-editor`; Monaco exposes `textarea.inputarea` as its hidden keyboard input and `data-uri`/`data-mode-id` attributes on editor nodes. | INFERRED (standard Monaco widget DOM; live confirmation pending) |
 | E2 | Breadcrumbs `.monaco-breadcrumbs` / `.monaco-breadcrumb-item`; minimap `.monaco-editor .minimap`. | INFERRED |
-| E3 | Monaco is a protected region (SPEC §22). GMUX focuses it via `textarea.inputarea.focus()` only and never synthesizes clicks/selection inside it. | DESIGN CONSTRAINT |
+| E3 | Monaco is a protected region (SPEC §30). GMUX focuses it only via `textarea.inputarea.focus()`; it never synthesizes clicks, selections, key presses (other than window-level VS Code keybindings), pointer events or clipboard actions inside the editor. | DESIGN CONSTRAINT (§29/§30) |
 
 ## 6. Surfaces: Search / SCM / Terminal
 
@@ -78,37 +81,39 @@ From `activitybarPart.ts` + `style.css` (OBSERVED):
 | S2 | Source Control content view `.scm-view`. | INFERRED |
 | S3 | Explorer content views `.explorer-folders-view` / `.explorer-view`. | INFERRED |
 | T1 | Terminal renders via xterm.js → `.xterm`; panel container `.part.panel .terminal-outer-container`. | INFERRED |
-| T2 | `github.dev` / `vscode.dev` (no remote tunnel) do **not** ship an integrated terminal → capability should report `UNSUPPORTED` there. | INFERRED (host heuristic; the toolbar must not advertise a terminal it cannot open — SPEC §20) |
+| T2 | `github.dev` / `vscode.dev` (no remote tunnel) are not known to ship an integrated terminal → observation reports NOT_DETECTED, the host expectation is `likely-unsupported`, and `FEATURES.terminalSurface = false` keeps the control disabled (SPEC §17/§46). | INFERRED (host heuristic; live confirmation pending) |
 
 ## 7. Quick input & input plumbing
 
 | # | Evidence | Level |
 |---|----------|-------|
 | Q1 | Command palette / quick-open render in `.quick-input-widget`. | INFERRED |
-| Q2 | Input widgets: `.monaco-inputbox` (+ `.info/.warning/.error`), `select` + `.select-container`. | OBSERVED (style.css) |
-| Q3 | VS Code Web dispatches commands from window-level keyboard events (`StandardKeyboardEvent`, `KeyCode` imported by the activity-bar part) — so synthetic `KeyboardEvent`s are a viable *secondary* actuation path. | INFERRED (mechanism exists; per-binding validation pending) |
+| Q2 | Input widgets: `.monaco-inputbox` (+ `.info/.warning/.error`), `select` + `.select-container`. | OBSERVED (`style.css`) |
+| Q3 | VS Code Web dispatches commands from window-level keyboard events (`StandardKeyboardEvent`, `KeyCode` imported by the activity-bar part) — synthetic `KeyboardEvent`s are a viable *secondary* actuation path; every keybinding result stays INFERRED until the state transition is observed (SPEC §10/§13). | INFERRED |
 
 ---
 
-## Selector preference compliance (SPEC §9)
+## Selector preference compliance
 
 The adapter resolves each target in this order and stops at the first match:
 
 1. **Semantic attributes** — e.g. `.monaco-editor[data-uri]` for the active file.
-2. **ARIA / accessible names** — `.action-label[aria-label^="Explorer"]` etc.
-3. **Stable IDs** — `[id="workbench.view.explorer"]`.
+2. **ARIA / accessible names** — `.action-label` with `aria-label`/`title` prefixes.
+3. **Stable IDs** — `[id="workbench.view.explorer"]` and friends.
 4. **Stable relationships** — `.part.sidebar` content probes (`.search-view`…).
 5. **Stable class names** — `.part.*`, `.monaco-*`, `.xterm`.
 
 No generated/hashed class names are used. All GitHub/VS Code-specific
-selectors live in `§D GITHUB-DEV ADAPTER` of `github-dev-mobile.user.js`.
+selectors live in **§D GITHUB-DEV ADAPTER** of `github-dev-mobile.user.js`.
+The kernel contains none (invariants I-02/I-03, SPEC §15).
 
 ## Known gaps (honest)
 
 - No interactive session on a physical Android device has been run from this
-  environment, so **no capability is claimed VALIDATED yet**. Run
-  `docs/verification.md` to promote entries.
+  environment, so **no capability or operation is VALIDATED yet**. Run
+  `docs/verification.md` and update `VERIFICATION_REPORT.md` to promote gates.
 - `.part.sidebar/.panel/.statusbar`, view-container ids, and the synthetic
-  keybinding path are INFERRED and are the first things to confirm live; the
-  adapter degrades gracefully (reports `NOT_DETECTED`/`COMMAND_FAILED`) if any
-  differ.
+  keybinding path are INFERRED and are the first things to confirm live;
+  the adapter returns structured failures (`EXPLORER_NOT_DETECTED`, …) and
+  degrades per §46/§47 if any differ — it never substitutes an invented
+  implementation (§59).

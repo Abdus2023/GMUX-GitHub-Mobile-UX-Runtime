@@ -1,100 +1,87 @@
-# Verification Plan & Status
+# Live Verification Matrix — github.dev / Android
 
-Verification invariant (SPEC §36): **NO EVIDENCE → NO VERIFIED CLAIM.**
-Statuses use the vocabulary of SPEC §35:
-`VERIFIED · PARTIALLY_VERIFIED · PROVISIONAL · BLOCKED · OUT_OF_SCOPE`.
+The automated verdict and the G0–G20 evidence ledger live in
+[`../VERIFICATION_REPORT.md`](../VERIFICATION_REPORT.md) (machine-readable:
+[`../diagnostics/gate-evidence.json`](../diagnostics/gate-evidence.json)).
 
-## 1. Automated suites (run in this repository)
+This file is the **manual live matrix**. Entries here only move a gate from
+PARTIAL/UNTESTED to PASS when the listed evidence has actually been observed
+on a real github.dev session and appended to `docs/dom-evidence.md`.
+Invariant I-15: **NO EVIDENCE → NO VERIFIED CLAIM.**
+
+## 1. Run the automated evidence first
 
 ```bash
-node tests/run-tests.mjs    # kernel unit suite (77 checks)
-node tests/dom-smoke.mjs    # fake-DOM boot/lifecycle smoke test (17 checks)
+node tests/run-tests.mjs     # pure kernel (113 checks)
+node tests/dom-smoke.mjs     # fake-DOM lifecycle (37 checks)
+node tests/adapter-flow.mjs  # stub workbench adapter operations (50 checks)
+node tests/gates.mjs         # writes diagnostics/gate-evidence.json
 ```
 
-Both suites are dependency-free (plain Node ≥ 18). They cover the pure kernel
-and the boot/teardown lifecycle only. **They do not constitute live-runtime
-verification** of github.dev behavior.
+## 2. Manual live matrix (SPEC §49/§52)
 
-| Suite | Covers (spec refs) |
-|---|---|
-| `run-tests.mjs` | Mode detection §3 · transitions §14 · preference tolerance §28 · scheduler coalescing §31 · command registry failure codes §15/§33 · capability classification §8 · terminal host rule §20 · keyboard inference §25 · gesture classifier §23 · reconcile planner §7/§12 · feature-status honesty §35/§36 |
-| `dom-smoke.mjs` | Bootstrap idempotency §32 · WAITING_FOR_APP parking §32 · dynamic app detection §40 · shell mount §16 · disable/re-enable without reload §39 · degraded (no false capability) reporting §33/§43 |
+Status legend: ✅ automated evidence recorded · 🖐 live run pending · ➖ out of scope.
 
-## 2. Live-runtime test matrix (SPEC §37)
+| Gate | Scenario | Status | Expected live evidence |
+|---|---|---|---|
+| G2 | Open `https://github.dev/<owner>/<repo>` | 🖐 | diagnostics header shows `Adapter: github-dev`, shell begins in WAITING→ACTIVE |
+| G3 | DevTools phone profile, 360–430 px | 🖐 | `Mode: MOBILE`, header + bottom bar visible |
+| G3 | DevTools 768 px | 🖐 | `Mode: COMPACT`, bottom bar, native titlebar still respected |
+| G3 | Desktop > 1024 px | 🖐 | `Mode: DESKTOP`, shell chrome hidden (`gmux-no-header gmux-no-footer`) |
+| G4 | Repeated reconcile (scroll, switch tabs) | ✅/🖐 | automated idempotence PASS; confirm one `#github-mobile-ux` live |
+| G5 | Open a file and edit it | 🖐 | type, caret, selection, copy/paste, touch scroll all work; minimap/breadcrumb hidden |
+| G6 | Tap **Files** | 🖐 | existing VS Code sidebar overlays as drawer; diagnostics later shows Explorer VALIDATED |
+| G7 | Tap a file in the drawer | 🖐 | returns to editor, drawer closes, Back stack empty |
+| G8 | Tap **Search** | 🖐 | existing Search view overlays; no custom search backend |
+| G9 | Close Search (Back/Escape/tap active) | 🖐 | returns to editor |
+| G10 | Tap **Git** | 🖐 | existing Source Control view overlays; GMUX owns no Git state |
+| G11 | Close Git | 🖐 | returns to editor |
+| — | Tap **Term.** | ✅/🖐 | control disabled (`aria-disabled`), tapping announces unavailability; no terminal claimed |
+| G12 | Hardware Back with drawer open | 🖐 | drawer closes; second Back leaves the page (never trapped) |
+| G12 | Back with settings/diagnostics modal open | 🖐 | modal closes, drawer/surface underneath preserved |
+| G12 | Back with Ctrl+Shift+P palette open | 🖐 | host quick input dismissed |
+| G12 | Back at editor, nothing owned | 🖐 | browser navigates normally (ALLOW_BROWSER_DEFAULT) |
+| G13 | Focus editor (soft keyboard appears) | 🖐 | bottom bar stays visually above the keyboard; no layout breakage; keyboard reported INFERRED |
+| G14 | Open another file / change view without reload | 🖐 | shell follows (surface adoption), no duplicate shell, reconciliation continues |
+| G16 | Change prefs, reload | 🖐 | prefs restored from `gmux:prefs:v1` |
+| G17 | Set storage value to `{bad` manually, reload | 🖐 | `PREFERENCE_PARSE_FAILED` warning, defaults, shell boots |
+| — | Alt+Shift+G | 🖐 | shell tears down; VS Code UI intact; GM chip/Alt+Shift+G restores it |
+| G18 | Host without explorer/search DOM | 🖐 | capabilities NOT_DETECTED, buttons actuate to structured failures, other features continue |
 
-Status legend: ✅ automated · 🖐 manual — pending on a real github.dev
-session · ➖ out of scope.
+## 3. Minimum acceptance walk-through (SPEC §52)
 
-| Scenario | Status | How |
-|---|---|---|
-| Desktop > 1024px | 🖐 pending | Chrome DevTools, desktop size; expect: no shell header, minimal chrome |
-| Compact 600–1024px | 🖐 pending | DevTools 768px; expect: bottom toolbar, native titlebar intact |
-| Mobile portrait < 600px | 🖐 pending | DevTools Pixel/Galaxy profile; expect: header + bottom toolbar, immersive |
-| Mobile landscape | 🖐 pending | Rotate profile; expect: same shell, re-fitted by visualViewport |
-| Editor open | 🖐 pending | Open a file; header shows file name; `focus-editor` works |
-| Explorer open (drawer) | 🖐 pending | Files button → sidebar overlays; file tap → editor, drawer closes |
-| Search open | 🖐 pending | Search button → search view overlays; result tap → editor |
-| Git open | 🖐 pending | Git button → SCM view overlays; **no GMUX-owned Git state** |
-| Terminal open | 🖐 pending | On hosts with a terminal; on github.dev expect disabled button + honest diagnostic |
-| Keyboard closed / open | 🖐 pending | Focus an input on Android; toolbar must stay above keyboard |
-| Dynamic DOM changes | ✅/🖐 | Mutation-driven reconcile is unit-tested; confirm no loops live |
-| Route / file / panel changes | 🖐 pending | Navigate between files/branches without reload; shell must follow |
-| Gesture enabled | 🖐 pending | Edge swipes from shell zones only; editor untouched |
-| Gesture disabled | 🖐 pending | Settings toggle; swipes inert |
-| Fresh installation | ✅ | Defaults applied |
-| Existing preferences | ✅ | Round-trip test |
-| Corrupt preferences | ✅ | `PREFERENCE_PARSE_FAILED` + defaults, boot unaffected |
-| Unsupported layout | ✅/🖐 | Smoke test parks in WAITING_FOR_APP/DEGRADED; confirm on non-VS Code page live |
-| Missing terminal | ✅ | Capability UNSUPPORTED/NOT_DETECTED, toolbar honest |
-| Missing Explorer | 🖐 pending | Capability NOT_DETECTED, command reports EXPLORER_NOT_FOUND |
+1. Open github.dev.
+2. Wait for application detection (WAITING_FOR_APP → ACTIVE in diagnostics).
+3. Enter mobile mode (narrow viewport).
+4. Verify exactly one shell root (`#github-mobile-ux`).
+5. Verify the editor remains usable (type/select/scroll/copy/paste).
+6. Open Explorer; close Explorer.
+7. Open Search; close Search.
+8. Open Source Control; close Source Control.
+9. Exercise Android Back at each layer, then at the editor.
+10. Open the soft keyboard; confirm the shell remains visible.
+11. Navigate between files/routes.
+12. Trigger repeated reconciliation (observe counter growth, no duplicates).
+13. Reload; verify preferences.
+14. Inspect diagnostics (☰ → Diagnostics) and use **Copy report**.
 
-## 3. Regression checklist (SPEC §38)
+## 4. Regression checklist (rerun after any adapter/CSS change)
 
-Re-run after any selector, adapter rule, or shell layout change:
+- [ ] Editor editable; caret, selection, clipboard, scroll intact (§29/§30)
+- [ ] Explorer / Search / Source Control are the *existing* VS Code views, repositioned only
+- [ ] No Git operation affordances introduced (§33)
+- [ ] Back never permanently traps (§34, I-11)
+- [ ] Exactly one shell, one toolbar, one stylesheet under all flows (I-01)
+- [ ] Every userscript element carries `data-gmux-owner="github-dev-mobile"` (I-13)
+- [ ] No network requests appear in the DevTools Network panel originating from the userscript (G19)
+- [ ] Desktop mode stays minimally intrusive
+- [ ] Disable/re-enable leaves the host application intact
 
-- [ ] Editor remains editable
-- [ ] Text selection remains functional
-- [ ] Copy/paste remains functional
-- [ ] Explorer remains usable
-- [ ] Search remains usable
-- [ ] GitHub UI remains responsive
-- [ ] Terminal remains usable when present
-- [ ] Shell can be disabled (Alt+Shift+G / GMUX menu / revive chip) and GitHub is left intact
-- [ ] Desktop mode remains minimally intrusive
+## 5. Promoting evidence
 
-## 4. Release gates (SPEC §49) — current honest status
-
-| Gate | Status |
-|---|---|
-| Userscript installs | 🖐 pending (metadata validated by inspection) |
-| Bootstrap succeeds | ✅ smoke-tested |
-| Adapter detected | 🖐 pending live |
-| Mobile mode activates | 🖐 pending live |
-| Editor remains functional | 🖐 pending live |
-| Explorer works when detected | 🖐 pending live |
-| Search works when detected | 🖐 pending live |
-| Git surface does not duplicate Git state | ✅ by construction (no Git model in GMUX); confirm live |
-| Terminal works when detected | 🖐 pending live (expected UNSUPPORTED on github.dev) |
-| Android viewport handling works | 🖐 pending on device |
-| Keyboard does not obscure shell | 🖐 pending on device |
-| MutationObserver reconciliation works | ✅ coalescing unit-tested; loop-guard present |
-| No polling loop is required | ✅ only bounded one-shot timers (boot warning, command validation) |
-| Preferences tolerate corruption | ✅ unit-tested |
-| No external dependency exists | ✅ zero imports, zero network calls |
-| No telemetry exists | ✅ no network code paths at all |
-| Disable/recovery works | ✅ smoke-tested |
-| Unsupported capabilities reported honestly | ✅ capability/feature-status unit-tested |
-
-**Release 0.1.0 must not be called "stable" until the 🖐 live gates pass.**
-
-## 5. Manual test recipe
-
-1. Install Tampermonkey/Violentmonkey in Chrome/Edge (or a userscript-capable
-   Android browser, e.g. Firefox Android + Tampermonkey).
-2. Install `github-dev-mobile.user.js`.
-3. Open `https://github.dev/<owner>/<repo>` (sign in if required).
-4. DevTools mobile emulation: toggle device toolbar, choose a phone profile.
-5. Exercise the matrix above; open diagnostics (☰ → Diagnostics) to inspect
-   capabilities, evidence levels, and the failure log; use **Copy report**
-   when filing issues.
-6. Alt+Shift+G disables/re-enables the shell without reloading.
+When a live run succeeds: append the observed facts to
+`docs/dom-evidence.md` with the date and evidence level (VALIDATED for
+observed state transitions), rerun `node tests/gates.mjs` after updating the
+gate basis where the harness cannot record the live fact itself, and update
+`VERIFICATION_REPORT.md`. Do not mark a gate PASS from a screenshot alone —
+the expected state transition must be described.

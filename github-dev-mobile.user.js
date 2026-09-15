@@ -2,7 +2,7 @@
 // @name         GitHub.dev Mobile UX
 // @namespace    https://github.com/Abdus2023/GMUX-GitHub-Mobile-UX-Runtime
 // @version      0.1.0
-// @description  Mobile-first, observation-driven presentation/interaction adapter for github.dev (VS Code for the Web). Dependency-free, local-first, reversible. GitHub/VS Code Web remains authoritative for repository, Git, editor and terminal state.
+// @description  v0.1 mobile interaction layer for github.dev (VS Code for the Web). Dependency-free, observation-driven, reversible. Observes and presents the existing application; GitHub/VS Code Web remains the sole application authority.
 // @author       GMUX contributors
 // @license      MIT
 // @match        https://github.dev/*
@@ -13,26 +13,31 @@
 // @grant        none
 // @noframes
 // ==/UserScript==
+// Network contract (SPEC §44): @require none · @resource none · userscript
+// network requests REQUIRED = 0. No @require/@resource directives are declared
+// on purpose; no remote code or remote assets are ever fetched.
 /**
- * GitHub.dev Mobile UX (GMUX) — v0.1.0
+ * GitHub.dev Mobile UX (GMUX) — v0.1.0 Concrete Implementation
  * ---------------------------------------------------------------------------
- * Normative spec: SPEC.md in this repository ("Prompt Instructions Pack").
+ * Normative spec: SPEC.md ("v0.1 Concrete Implementation Contract").
  *
- * Governing rules (spec §50):
- *   Observe first. Adapt second. Mutate third. Validate fourth.
- *   The userscript owns mobile interaction; GitHub owns application state.
+ * Governing laws:
+ *   Observe → Normalize → Decide → Mutate → Observe → Validate.
+ *   The userscript owns mobile interaction; GitHub/VS Code owns app state.
+ *   NO EVIDENCE → NO VERIFIED CLAIM.
+ *   When the host is unknown, degrade or stop; do not guess.
  *
- * Single-file layout (spec §4/§5 — logical boundaries remain recognizable):
- *   §A identity & versions          §B vocabulary (enums, failure codes)
+ * Single-file layout:
+ *   §A identity & versions          §B vocabulary (enums, codes, flags)
  *   §C pure kernel (no DOM, no GitHub selectors — unit tested)
  *   §D github-dev adapter           ALL GitHub/VS Code DOM knowledge lives here
- *   §E adapter stylesheet           presentation arm of the adapter (.gdmux-*)
- *   §F shell UI                     §G viewport subsystem
- *   §H input wiring                 §I reconciler (plan -> apply -> verify)
- *   §J lifecycle & observers        §K bootstrap, teardown, test exports
+ *   §E namespaced stylesheet        (.gmux-*, state classes only)
+ *   §F shell UI                     §G viewport / keyboard
+ *   §H input & Android Back         §I reconciler (observe→decide→mutate→validate)
+ *   §J lifecycle / observers        §K bootstrap, teardown, exports
  *
- * Privacy (§29): no network access, no telemetry, local storage only.
- * Security (§45): never touches cookies/tokens/credentials.
+ * Privacy (§48): no network access, no telemetry, no credentials, no repo
+ * content. Only versioned UI preferences in localStorage (§39).
  */
 (function () {
 'use strict';
@@ -40,87 +45,148 @@
 const HAS_DOM = typeof window !== 'undefined' && typeof document !== 'undefined';
 
 /* ===========================================================================
- * §A IDENTITY & VERSIONS (spec §42)
+ * §A IDENTITY & VERSIONS
  * =========================================================================*/
 
 const NAME = 'GitHub.dev Mobile UX';
 const USER_INTERFACE_VERSION = '0.1.0';
+const ADAPTER_ID = 'github-dev';
 const ADAPTER_VERSION = 'github-dev@1';
 const PREFERENCE_SCHEMA_VERSION = 1;
-const STORAGE_KEY = 'gdmux:prefs:v1';
-const DISABLED_FLAG_KEY = 'gdmux:disabled';
+
+const STORAGE_KEY = 'gmux:prefs:v1';
+const DISABLED_FLAG_KEY = 'gmux:disabled';
+const STYLE_ID = 'gmux-style';
+const ROOT_ID = 'github-mobile-ux';
+const OWNER_ATTR = 'data-gmux-owner';
+const OWNER_VALUE = 'github-dev-mobile';
+const HISTORY_MARKER = 'gmux';
 
 /* ===========================================================================
- * §B VOCABULARY — modes, surfaces, lifecycle, evidence, failure codes
+ * §B VOCABULARY — modes, surfaces, lifecycle, evidence, codes, flags
  * =========================================================================*/
 
+// Shell modes (§18). Breakpoints are centralized policy defaults.
 const SHELL_MODE = Object.freeze({ DESKTOP: 'desktop', COMPACT: 'compact', MOBILE: 'mobile' });
+const DEFAULT_BREAKPOINTS = Object.freeze({ compactMin: 600, desktopMin: 1024 });
+
+// v0.1 surface enumeration (§17). Terminal may be observed but stays disabled
+// by default; SETTINGS exists only as the internal diagnostics/prefs surface.
 const SURFACE = Object.freeze({
-  EDITOR: 'editor', EXPLORER: 'explorer', SEARCH: 'search',
-  GIT: 'git', TERMINAL: 'terminal', SETTINGS: 'settings',
+  EDITOR: 'editor',
+  EXPLORER: 'explorer',
+  SEARCH: 'search',
+  SOURCE_CONTROL: 'sourceControl',
+  TERMINAL: 'terminal',
+  SETTINGS: 'settings',
 });
+const DRAWER_SURFACES = Object.freeze([SURFACE.EXPLORER, SURFACE.SEARCH, SURFACE.SOURCE_CONTROL]);
+const SECONDARY_SURFACES = Object.freeze([SURFACE.EXPLORER, SURFACE.SEARCH, SURFACE.SOURCE_CONTROL, SURFACE.TERMINAL, SURFACE.SETTINGS]);
+
 const LIFECYCLE = Object.freeze({
-  BOOTSTRAPPING: 'BOOTSTRAPPING', WAITING_FOR_APP: 'WAITING_FOR_APP',
-  DETECTING: 'DETECTING', ACTIVE: 'ACTIVE', DEGRADED: 'DEGRADED',
-  FAILED: 'FAILED', DISABLED: 'DISABLED',
+  BOOTSTRAPPING: 'BOOTSTRAPPING',
+  WAITING_FOR_APP: 'WAITING_FOR_APP',
+  ACTIVE: 'ACTIVE',
+  DEGRADED: 'DEGRADED',
+  FAILED: 'FAILED',
+  DISABLED: 'DISABLED',
 });
-// Capability states (spec §8). NOT_DETECTED must never be promoted to
-// "absent" without evidence — the app may simply not have rendered it yet.
-const CAP = Object.freeze({
-  DETECTED: 'DETECTED', NOT_DETECTED: 'NOT_DETECTED',
-  UNKNOWN: 'UNKNOWN', UNSUPPORTED: 'UNSUPPORTED',
-});
-// Evidence model (spec §34).
+
+// Host classification (§7) — independent of any visual DOM detection.
+const TARGET = Object.freeze({ SUPPORTED: 'SUPPORTED_TARGET', UNSUPPORTED: 'UNSUPPORTED_TARGET' });
+
+// Capability values (§12). UNKNOWN must never become false without evidence.
+const CAP = Object.freeze({ DETECTED: 'DETECTED', NOT_DETECTED: 'NOT_DETECTED', UNKNOWN: 'UNKNOWN' });
+
+// Evidence levels (§11).
 const EVIDENCE = Object.freeze({ OBSERVED: 'OBSERVED', INFERRED: 'INFERRED', VALIDATED: 'VALIDATED' });
-// Feature status vocabulary (spec §35).
+
+// Feature status vocabulary for diagnostics (§37/§38).
 const FSTATUS = Object.freeze({
   VERIFIED: 'VERIFIED', PARTIALLY_VERIFIED: 'PARTIALLY_VERIFIED',
   PROVISIONAL: 'PROVISIONAL', BLOCKED: 'BLOCKED', OUT_OF_SCOPE: 'OUT_OF_SCOPE',
 });
-// Failure codes (spec §33). Failure must never silently become success.
-const FAIL = Object.freeze({
-  BOOTSTRAP_FAILED: 'BOOTSTRAP_FAILED', ADAPTER_NOT_FOUND: 'ADAPTER_NOT_FOUND',
-  EDITOR_NOT_FOUND: 'EDITOR_NOT_FOUND', EXPLORER_NOT_FOUND: 'EXPLORER_NOT_FOUND',
-  SEARCH_NOT_FOUND: 'SEARCH_NOT_FOUND', SOURCE_CONTROL_NOT_FOUND: 'SOURCE_CONTROL_NOT_FOUND',
-  TERMINAL_NOT_FOUND: 'TERMINAL_NOT_FOUND', CAPABILITY_UNKNOWN: 'CAPABILITY_UNKNOWN',
-  DOM_CHANGED: 'DOM_CHANGED', UNSUPPORTED_GITHUB_LAYOUT: 'UNSUPPORTED_GITHUB_LAYOUT',
-  VIEWPORT_API_UNAVAILABLE: 'VIEWPORT_API_UNAVAILABLE', SHELL_MOUNT_FAILED: 'SHELL_MOUNT_FAILED',
-  PREFERENCE_PARSE_FAILED: 'PREFERENCE_PARSE_FAILED', COMMAND_FAILED: 'COMMAND_FAILED',
-  RECONCILIATION_FAILED: 'RECONCILIATION_FAILED', UNEXPECTED_TRANSITION: 'UNEXPECTED_TRANSITION',
+
+// Feature flags (§36). Experimental functionality is independently switchable.
+// gestures is deferred from v0.1 (§2 explicit deferral; §54 "do not implement
+// gestures in v0.1") and MUST stay off. Terminal is disabled by default (§17).
+const FEATURES = Object.freeze({
+  mobileShell: true,
+  immersiveEditor: true,
+  explorerDrawer: true,
+  searchSurface: true,
+  sourceControlSurface: true,
+  terminalSurface: false,
+  gestures: false,
+  androidBack: true,
+  diagnostics: true,
 });
 
-// Default breakpoints (spec §3): defaults, not immutable assumptions.
-const DEFAULT_BREAKPOINTS = Object.freeze({ compactMin: 600, desktopMin: 1024 });
+// Failure taxonomy (§45). Exhaustive for v0.1; failures surface in diagnostics.
+const FAIL = Object.freeze({
+  BOOTSTRAP_FAILED: 'BOOTSTRAP_FAILED',
+  ADAPTER_NOT_FOUND: 'ADAPTER_NOT_FOUND',
+  APPLICATION_NOT_DETECTED: 'APPLICATION_NOT_DETECTED',
+  CAPABILITY_UNKNOWN: 'CAPABILITY_UNKNOWN',
+  EDITOR_NOT_DETECTED: 'EDITOR_NOT_DETECTED',
+  EXPLORER_NOT_DETECTED: 'EXPLORER_NOT_DETECTED',
+  SEARCH_NOT_DETECTED: 'SEARCH_NOT_DETECTED',
+  SOURCE_CONTROL_NOT_DETECTED: 'SOURCE_CONTROL_NOT_DETECTED',
+  TERMINAL_NOT_DETECTED: 'TERMINAL_NOT_DETECTED',
+  SHELL_MOUNT_FAILED: 'SHELL_MOUNT_FAILED',
+  SHELL_DUPLICATION: 'SHELL_DUPLICATION',
+  DOM_CHANGED: 'DOM_CHANGED',
+  UNSUPPORTED_LAYOUT: 'UNSUPPORTED_LAYOUT',
+  VIEWPORT_UNAVAILABLE: 'VIEWPORT_UNAVAILABLE',
+  PREFERENCE_PARSE_FAILED: 'PREFERENCE_PARSE_FAILED',
+  COMMAND_FAILED: 'COMMAND_FAILED',
+  RECONCILIATION_FAILED: 'RECONCILIATION_FAILED',
+});
 
 /* ===========================================================================
  * §C PURE KERNEL
- * Dependency-free, DOM-free, GitHub-selector-free. Unit tested by
- * tests/run-tests.mjs. The kernel consumes normalized observations produced
- * by the adapter (spec §6/§41) and never queries GitHub DOM itself.
+ * No DOM, no Monaco internals, no GitHub selectors (§15, invariant I-03).
+ * Unit tested by tests/run-tests.mjs. The kernel consumes only normalized
+ * observations produced by the adapter (§14) and emits intent/decisions.
  * =========================================================================*/
 
-/* --------------------------- diagnostics log ---------------------------- */
+/* ------------------------------ diagnostics ------------------------------ */
 
 function createDiagLog(max = 60) {
   const entries = [];
   return {
     log(code, msg, level = 'info') {
-      entries.push({ ts: Date.now(), code: code || null, msg: String(msg || ''), level });
+      entries.push({ ts: Date.now(), code: code || null, msg: String(msg == null ? '' : msg), level });
       if (entries.length > max) entries.splice(0, entries.length - max);
     },
     entries() { return entries.slice(); },
+    warnings() { return entries.filter((e) => e.level === 'warn' || e.level === 'error').slice(-20); },
     clear() { entries.length = 0; },
   };
 }
 
-/* ------------------------------ scheduler ------------------------------- */
-// Spec §11/§31: mutation/resize/route signals -> markDirty -> one rAF ->
-// exactly one reconciliation per frame. No polling loops anywhere (spec §10).
+/* --------------------------- host detection (§7) ------------------------- */
+// Pure: takes a location-like object. MUST run before any DOM mutation and
+// MUST be independent of visual DOM detection.
+function detectTarget(loc) {
+  if (!loc || typeof loc.hostname !== 'string' || !loc.hostname) return TARGET.UNSUPPORTED;
+  const host = loc.hostname.toLowerCase();
+  const path = typeof loc.pathname === 'string' ? loc.pathname : '/';
+  const githubDev = host === 'github.dev' || host.endsWith('.github.dev');
+  const vscodeGithub = (host === 'vscode.dev' || host.endsWith('.vscode.dev')) &&
+    path.replace(/^\/+/, '').toLowerCase().startsWith('github/');
+  return githubDev || vscodeGithub ? TARGET.SUPPORTED : TARGET.UNSUPPORTED;
+}
 
+/* ------------------------------ scheduler (§28) -------------------------- */
+// mutation/resize/route/viewport signals → mark dirty → coalesce → ONE
+// reconciler pass per animation frame. Re-entrant passes are prevented.
+// No steady-state polling exists anywhere (§27, invariant I-05).
 function createScheduler(env) {
   const raf = (env && env.requestAnimationFrame) ||
     ((fn) => setTimeout(() => fn(Date.now()), 16));
   let queued = false;
+  let running = false;
   const reasons = new Set();
   let handler = null;
   return {
@@ -131,21 +197,22 @@ function createScheduler(env) {
       queued = true;
       raf(() => {
         queued = false;
+        if (running || !handler) { reasons.clear(); return; } // re-entrancy guard
+        running = true;
         const rs = Array.from(reasons);
         reasons.clear();
-        if (handler) handler(rs);
+        try { handler(rs); } finally { running = false; }
       });
     },
     pending() { return queued; },
   };
 }
 
-/* ------------------------------ mode detect ----------------------------- */
-// Spec §3: viewport checks are centralized here only.
+/* --------------------------- viewport classification (§18) --------------- */
 
 function modeForWidth(width, breakpoints = DEFAULT_BREAKPOINTS, override = 'auto') {
-  if (override && override !== 'auto' && SHELL_MODE[override.toUpperCase()]) {
-    return SHELL_MODE[override.toUpperCase()];
+  if (override && override !== 'auto' && SHELL_MODE[String(override).toUpperCase()]) {
+    return SHELL_MODE[String(override).toUpperCase()];
   }
   const w = Number(width) || 0;
   if (w > breakpoints.desktopMin) return SHELL_MODE.DESKTOP;
@@ -154,124 +221,132 @@ function modeForWidth(width, breakpoints = DEFAULT_BREAKPOINTS, override = 'auto
 }
 
 /* ---------------------------- state transitions -------------------------- */
-// Spec §14 minimum transition set. Anything else is diagnosable.
 
 const TRANSITIONS = Object.freeze({
-  editor: Object.freeze({
-    openExplorer: SURFACE.EXPLORER, openSearch: SURFACE.SEARCH,
-    openGit: SURFACE.GIT, openTerminal: SURFACE.TERMINAL, openSettings: SURFACE.SETTINGS,
+  [SURFACE.EDITOR]: Object.freeze({
+    openExplorer: SURFACE.EXPLORER,
+    openSearch: SURFACE.SEARCH,
+    openSourceControl: SURFACE.SOURCE_CONTROL,
+    openTerminal: SURFACE.TERMINAL,
+    openSettings: SURFACE.SETTINGS,
   }),
-  explorer: Object.freeze({ selectFile: SURFACE.EDITOR }),
-  search: Object.freeze({ selectResult: SURFACE.EDITOR }),
-  git: Object.freeze({}),
-  terminal: Object.freeze({}),
-  settings: Object.freeze({}),
+  [SURFACE.EXPLORER]: Object.freeze({ selectFile: SURFACE.EDITOR }),
+  [SURFACE.SEARCH]: Object.freeze({ selectResult: SURFACE.EDITOR }),
+  [SURFACE.SOURCE_CONTROL]: Object.freeze({}),
+  [SURFACE.TERMINAL]: Object.freeze({}),
+  [SURFACE.SETTINGS]: Object.freeze({}),
 });
 
 function transitionFor(state, action) {
   const current = state.activeSurface;
   if (action === 'close') {
-    if (current === SURFACE.EDITOR || current === SURFACE.SETTINGS) {
-      return { ok: false, code: FAIL.UNEXPECTED_TRANSITION, reason: `close ignored on ${current}` };
+    if (current === SURFACE.EDITOR) {
+      return { ok: false, code: FAIL.COMMAND_FAILED, reason: 'close ignored on editor' };
     }
     return { ok: true, to: state.previousSurface && state.previousSurface !== current
       ? state.previousSurface : SURFACE.EDITOR };
   }
   const row = TRANSITIONS[current] || {};
-  const to = row && row[action];
-  if (!to) {
-    return { ok: false, code: FAIL.UNEXPECTED_TRANSITION, reason: `no transition ${current}+${action}` };
-  }
+  const to = row[action];
+  if (!to) return { ok: false, code: FAIL.COMMAND_FAILED, reason: `no transition ${current}+${action}` };
   return { ok: true, to };
 }
 
-/* ------------------------------ preferences ----------------------------- */
-// Spec §28: versioned schema, tolerant of malformed data, never blocks boot.
+/* ------------------------ Android Back decision (§34) -------------------- */
+// Pure priority decision. The history plumbing lives in §H; the kernel only
+// decides whether Back can be consumed and what it should do.
+//   modal open?        → close modal
+//   host quick input?  → dismiss it (modal-class host surface)
+//   drawer/secondary?  → return to editor
+//   otherwise          → ALLOW_BROWSER_DEFAULT (Back is never trapped, I-11)
+function planBack(ctx) {
+  const c = ctx || {};
+  if (c.modal) return { consume: 'modal', to: null };
+  if (c.quickInputVisible) return { consume: 'quickinput', to: null };
+  const surface = c.activeSurface;
+  if (surface && surface !== SURFACE.EDITOR && SECONDARY_SURFACES.indexOf(surface) !== -1) {
+    const to = c.previousSurface && c.previousSurface !== surface ? c.previousSurface : SURFACE.EDITOR;
+    return { consume: 'surface', to };
+  }
+  return { consume: null, to: null }; // ALLOW_BROWSER_DEFAULT
+}
+
+/* ------------------------------ preferences (§39/§40) --------------------- */
 
 const PREF_DEFAULTS = Object.freeze({
   version: PREFERENCE_SCHEMA_VERSION,
   mode: 'auto',
   immersive: true,
   preferredSurface: SURFACE.EDITOR,
-  gestures: true,
   bottomBar: true,
-  terminalFullscreen: true,
 });
 
 function parsePreferences(raw) {
   const notes = [];
-  if (raw == null || raw === '') {
-    return { prefs: Object.assign({}, PREF_DEFAULTS), notes };
-  }
+  const fallback = () => ({ prefs: Object.assign({}, PREF_DEFAULTS), notes });
+  if (raw == null || raw === '') return fallback();
   let data;
-  try {
-    data = JSON.parse(raw);
-  } catch (e) {
+  try { data = JSON.parse(raw); }
+  catch (e) {
     notes.push({ code: FAIL.PREFERENCE_PARSE_FAILED, msg: 'preferences JSON invalid; using defaults' });
-    return { prefs: Object.assign({}, PREF_DEFAULTS), notes };
+    return fallback();
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     notes.push({ code: FAIL.PREFERENCE_PARSE_FAILED, msg: 'preferences not an object; using defaults' });
-    return { prefs: Object.assign({}, PREF_DEFAULTS), notes };
+    return fallback();
   }
   if (data.version !== PREFERENCE_SCHEMA_VERSION) {
     notes.push({ code: FAIL.PREFERENCE_PARSE_FAILED, msg: `unknown preference schema version ${String(data.version)}; using defaults` });
-    return { prefs: Object.assign({}, PREF_DEFAULTS), notes };
+    return fallback();
   }
   const prefs = Object.assign({}, PREF_DEFAULTS);
-  const surfaces = Object.values(SURFACE);
   if (typeof data.mode === 'string' && ['auto', 'mobile', 'compact', 'desktop'].indexOf(data.mode) !== -1) prefs.mode = data.mode;
   if (typeof data.immersive === 'boolean') prefs.immersive = data.immersive;
-  if (typeof data.preferredSurface === 'string' && surfaces.indexOf(data.preferredSurface) !== -1) prefs.preferredSurface = data.preferredSurface;
-  if (typeof data.gestures === 'boolean') prefs.gestures = data.gestures;
+  if (typeof data.preferredSurface === 'string' && Object.values(SURFACE).indexOf(data.preferredSurface) !== -1) {
+    prefs.preferredSurface = data.preferredSurface;
+  }
   if (typeof data.bottomBar === 'boolean') prefs.bottomBar = data.bottomBar;
-  if (typeof data.terminalFullscreen === 'boolean') prefs.terminalFullscreen = data.terminalFullscreen;
   return { prefs, notes };
 }
 
 function createPreferenceStore(env, diag) {
   const storage = (env && env.storage) || null;
   let prefs = Object.assign({}, PREF_DEFAULTS);
-  function load() {
-    let raw = null;
-    if (storage) {
-      try { raw = storage.getItem(STORAGE_KEY); }
-      catch (e) { diag && diag.log(FAIL.PREFERENCE_PARSE_FAILED, 'storage read failed; using defaults', 'warn'); }
-    }
-    const parsed = parsePreferences(raw);
-    prefs = parsed.prefs;
-    parsed.notes.forEach((n) => diag && diag.log(n.code, n.msg, 'warn'));
-    return prefs;
-  }
-  function get() { return Object.assign({}, prefs); }
-  function set(patch) {
-    prefs = Object.assign({}, prefs, patch, { version: PREFERENCE_SCHEMA_VERSION });
-    if (storage) {
-      try { storage.setItem(STORAGE_KEY, JSON.stringify(prefs)); }
-      catch (e) { diag && diag.log(FAIL.PREFERENCE_PARSE_FAILED, 'storage write failed (non-fatal)', 'warn'); }
-    }
-    return get();
-  }
-  function reset() {
-    prefs = Object.assign({}, PREF_DEFAULTS);
-    if (storage) {
-      try { storage.removeItem(STORAGE_KEY); } catch (e) { /* non-fatal */ }
-    }
-    return get();
-  }
-  return { load, get, set, reset };
+  return {
+    load() {
+      let raw = null;
+      if (storage) {
+        try { raw = storage.getItem(STORAGE_KEY); }
+        catch (e) { diag && diag.log(FAIL.PREFERENCE_PARSE_FAILED, 'storage read failed; using defaults', 'warn'); }
+      }
+      const parsed = parsePreferences(raw);
+      prefs = parsed.prefs;
+      parsed.notes.forEach((n) => diag && diag.log(n.code, n.msg, 'warn'));
+      return prefs;
+    },
+    get() { return Object.assign({}, prefs); },
+    set(patch) {
+      prefs = Object.assign({}, prefs, patch, { version: PREFERENCE_SCHEMA_VERSION });
+      if (storage) {
+        try { storage.setItem(STORAGE_KEY, JSON.stringify(prefs)); }
+        catch (e) { diag && diag.log(FAIL.PREFERENCE_PARSE_FAILED, 'storage write failed (non-fatal)', 'warn'); }
+      }
+      return this.get();
+    },
+    reset() {
+      prefs = Object.assign({}, PREF_DEFAULTS);
+      if (storage) { try { storage.removeItem(STORAGE_KEY); } catch (e) { /* non-fatal */ } }
+      return this.get();
+    },
+  };
 }
 
-/* ---------------------------- command registry --------------------------- */
-// Spec §15: every input source (toolbar / gesture / keyboard / accessibility)
-// converges on commands; no per-input navigation logic.
+/* --------------------------- command registry (§22/§23) ------------------ */
 
 function createCommandRegistry(diag) {
   const commands = new Map();
   return {
-    register(id, fn, meta = {}) {
-      commands.set(id, { fn, meta });
-    },
+    register(id, fn, meta = {}) { commands.set(id, { fn, meta }); },
     ids() { return Array.from(commands.keys()); },
     execute(id, payload) {
       const entry = commands.get(id);
@@ -281,7 +356,7 @@ function createCommandRegistry(diag) {
       }
       try {
         const result = entry.fn(payload);
-        return (result && typeof result === 'object' && 'ok' in result) ? result : { ok: true, result };
+        return result && typeof result === 'object' && 'ok' in result ? result : { ok: true, result };
       } catch (error) {
         diag && diag.log(FAIL.COMMAND_FAILED, `command threw: ${id}: ${error && error.message}`, 'error');
         return { ok: false, code: FAIL.COMMAND_FAILED, error };
@@ -290,40 +365,45 @@ function createCommandRegistry(diag) {
   };
 }
 
-/* ------------------------- capability classification --------------------- */
-// Spec §8: adapter exposes capability states; never fabricate capability.
-
+/* ----------------------- capability classification (§12) ----------------- */
+// Minimum set per §12. Input is the adapter's NORMALIZED observation (§14).
 function classifyCapabilities(obs) {
-  const caps = {};
-  const wb = !!(obs && obs.workbench && obs.workbench.present);
-  caps.editor = wb ? (obs.editor && obs.editor.present ? CAP.DETECTED : CAP.NOT_DETECTED) : CAP.UNKNOWN;
-  caps.explorer = wb ? (obs.views && obs.views.explorer && obs.views.explorer.present ? CAP.DETECTED : CAP.NOT_DETECTED) : CAP.UNKNOWN;
-  caps.search = wb ? (obs.views && obs.views.search && obs.views.search.present ? CAP.DETECTED : CAP.NOT_DETECTED) : CAP.UNKNOWN;
-  caps.sourceControl = wb ? (obs.views && obs.views.scm && obs.views.scm.present ? CAP.DETECTED : CAP.NOT_DETECTED) : CAP.UNKNOWN;
-  caps.terminal = wb
-    ? (obs.terminal && obs.terminal.present
-      ? CAP.DETECTED
-      : (obs.terminal && obs.terminal.hostExpectation === 'likely-unsupported' ? CAP.UNSUPPORTED : CAP.NOT_DETECTED))
-    : CAP.UNKNOWN;
-  return caps;
+  const unknown = () => ({
+    editor: CAP.UNKNOWN, explorer: CAP.UNKNOWN, search: CAP.UNKNOWN,
+    sourceControl: CAP.UNKNOWN, terminal: CAP.UNKNOWN, activityBar: CAP.UNKNOWN,
+    statusBar: CAP.UNKNOWN, commandPalette: CAP.UNKNOWN,
+  });
+  if (!obs || !obs.application || !obs.application.detected) return unknown();
+  const s = obs.surfaces || {};
+  const p = obs.parts || {};
+  const d = (found) => (found ? CAP.DETECTED : CAP.NOT_DETECTED);
+  return {
+    editor: d(!!(s.editor && s.editor.present)),
+    explorer: d(!!(s.explorer && s.explorer.present)),
+    search: d(!!(s.search && s.search.present)),
+    sourceControl: d(!!(s.sourceControl && s.sourceControl.present)),
+    terminal: d(!!(s.terminal && s.terminal.present)),
+    activityBar: d(!!(p.activityBar && p.activityBar.present)),
+    statusBar: d(!!(p.statusBar && p.statusBar.present)),
+    // The quick-input widget only exists while open; never claim NOT_DETECTED
+    // merely because it is closed (§12: UNKNOWN must not become false).
+    commandPalette: p.quickInput && p.quickInput.present ? CAP.DETECTED : CAP.UNKNOWN,
+  };
 }
 
-// Spec §8/§20: NOT_DETECTED must not be converted to ABSENT without evidence.
-// github.dev/vscode.dev (no remote) do not ship an integrated terminal as of
-// the evidence date (docs/dom-evidence.md); that is an INFERENCE, not proof.
+// Host expectation heuristic for the terminal — INFERRED evidence only.
+// github.dev/vscode.dev without a remote are not known to ship a terminal;
+// observation always overrules this (docs/dom-evidence.md T2).
 function terminalHostExpectation(hostname) {
   if (typeof hostname !== 'string' || !hostname) return 'unknown';
   return /(^|\.)(github\.dev|vscode\.dev)$/.test(hostname) ? 'likely-unsupported' : 'unknown';
 }
 
-/* --------------------------- keyboard inference --------------------------- */
-// Spec §25: infer keyboard from significant visual-viewport reduction.
-// The result is always evidence-level INFERRED unless stronger validation
-// exists (no browser-independent strong evidence exists on the web).
-
+/* --------------------------- keyboard inference (§29/G13) ---------------- */
+// visualViewport height collapse → keyboard INFERRED. Never stronger.
 function inferKeyboard(sample) {
   if (!sample || !sample.vvAvailable || !sample.vvHeight || !sample.layoutHeight) {
-    return { visible: false, evidence: 'UNKNOWN' };
+    return { visible: false, evidence: CAP.UNKNOWN };
   }
   const ratio = sample.vvHeight / sample.layoutHeight;
   if (ratio <= 0.75 && sample.vvWidth / (sample.layoutWidth || sample.vvWidth) >= 0.9) {
@@ -332,42 +412,39 @@ function inferKeyboard(sample) {
   return { visible: false, evidence: EVIDENCE.INFERRED };
 }
 
-/* ----------------------------- gesture engine ----------------------------- */
-// Spec §23: conservative, controlled zones only, NO ACTION when unsure.
-// Pure classifier — wiring (protected-zone checks) lives in §H.
-
-function classifyGesture(track, cfg = {}) {
-  if (!track || track.points < 2) return null;
-  const edge = cfg.edgeSize != null ? cfg.edgeSize : 24;
-  const minDistance = cfg.minDistance != null ? cfg.minDistance : 56;
-  const maxDuration = cfg.maxDuration != null ? cfg.maxDuration : 650;
-  const dominance = cfg.dominance != null ? cfg.dominance : 1.4;
-  const dx = track.x1 - track.x0;
-  const dy = track.y1 - track.y0;
-  const adx = Math.abs(dx);
-  const ady = Math.abs(dy);
-  const distance = Math.max(adx, ady);
-  if (distance < minDistance) return null; // NO ACTION: insufficient travel
-  if (track.duration > maxDuration) return null; // NO ACTION: too slow (scroll intent)
-  if (adx > 0 && ady > 0 && Math.max(adx, ady) / Math.min(adx, ady) < dominance) {
-    return null; // NO ACTION: diagonal — insufficient confidence
+/* --------------------- pending-command validation (§10/§13) -------------- */
+// Pure evaluation of whether an invoked command produced the expected state.
+// Capability DETECTED is not validation; only an observed transition is.
+function evaluatePending(pending, obs, now) {
+  if (!pending) return { state: 'idle' };
+  const elapsed = now - pending.t0;
+  let done = false;
+  if (pending.expect === SURFACE.TERMINAL) {
+    done = !!(obs.surfaces && obs.surfaces.terminal && obs.surfaces.terminal.visible);
+  } else if (pending.expect === SURFACE.EDITOR) {
+    done = !obs.parts.sideBar.visible && !(obs.surfaces.terminal && obs.surfaces.terminal.visible);
+  } else {
+    const viewKey = pending.expect === SURFACE.SOURCE_CONTROL ? 'scm' : pending.expect;
+    done = !!obs.parts.sideBar.visible && obs.sidebarActiveView === viewKey;
   }
-  const start = { x: track.x0, y: track.y0, w: track.vw || 0, h: track.vh || 0 };
-  if (adx >= ady) {
-    if (dx > 0 && start.x <= edge) return { action: 'open-explorer', confidence: 'edge-swipe' };
-    if (dx < 0 && start.w - start.x <= edge) return { action: 'close-surface', confidence: 'edge-swipe' };
-    return null; // horizontal swipe not from an edge: NO ACTION
+  if (done) return { state: 'done' };
+  if (!pending.retried && elapsed > 1200) return { state: 'retry' }; // one bounded retry
+  if (elapsed > 3200) {
+    const map = {
+      [SURFACE.EXPLORER]: FAIL.EXPLORER_NOT_DETECTED,
+      [SURFACE.SEARCH]: FAIL.SEARCH_NOT_DETECTED,
+      [SURFACE.SOURCE_CONTROL]: FAIL.SOURCE_CONTROL_NOT_DETECTED,
+      [SURFACE.TERMINAL]: FAIL.TERMINAL_NOT_DETECTED,
+      [SURFACE.EDITOR]: FAIL.COMMAND_FAILED,
+    };
+    return { state: 'expired', code: map[pending.expect] || FAIL.COMMAND_FAILED };
   }
-  if (dy < 0 && start.h - start.y <= edge) return { action: 'open-terminal', confidence: 'edge-swipe' };
-  if (dy > 0 && start.y <= edge) return { action: 'close-surface', confidence: 'edge-swipe' };
-  return null; // vertical swipe not from an edge: NO ACTION
+  return { state: 'wait' };
 }
 
-/* ---------------------------- reconcile planner --------------------------- */
-// Spec §7/§31: OBSERVE -> CAPABILITY MAP -> STATE REDUCTION -> DECISION.
-// Pure function: (observation, kernel state, preferences) -> decision plan.
-// MUTATION happens later, in §I, through the adapter/shell only.
-
+/* ---------------------------- reconcile planner (§24) -------------------- */
+// Pure: (normalized observation, state, prefs, caps) → decision plan.
+// Mutation happens later, in §I, through shell/adapter only.
 function planReconcile(input) {
   const obs = input.obs || {};
   const st = input.state || {};
@@ -378,198 +455,320 @@ function planReconcile(input) {
   const width = st.viewport ? st.viewport.width : 0;
   const shellMode = modeForWidth(width, DEFAULT_BREAKPOINTS, prefs.mode);
   const isMobile = shellMode === SHELL_MODE.MOBILE;
-  const immersiveOn = !!(prefs.immersive && isMobile);
+  const immersiveOn = !!(FEATURES.immersiveEditor && prefs.immersive && isMobile);
 
-  // ----- surface adoption: DOM state is evidence, kernel state is control --
+  const s = obs.surfaces || {};
+  const parts = obs.parts || {};
+
+  // ---- surface adoption: DOM is evidence, kernel state is control ---------
   let activeSurface = st.activeSurface || SURFACE.EDITOR;
   let previousSurface = st.previousSurface || null;
   let adoptedFromApp = false;
   let fileSelected = false;
   const appSurface = obs.appSurface || null;
 
-  const fileKey = obs.editor && obs.editor.activeFile
-    ? (obs.editor.activeFile.uri || obs.editor.activeFile.name || '') : '';
+  const activeFile = s.editor && s.editor.activeFile;
+  const fileKey = activeFile ? (activeFile.uri || activeFile.name || '') : '';
   const fileChanged = !!fileKey && fileKey !== (st.lastFileKey || '');
 
   if (!input.pending) {
     if (fileChanged && (activeSurface === SURFACE.EXPLORER || activeSurface === SURFACE.SEARCH) && isMobile) {
-      // Spec §14: EXPLORER selectFile -> EDITOR ; SEARCH selectResult -> EDITOR.
+      // §31/§32: selecting a file returns to the editor and closes the drawer.
       fileSelected = true;
       previousSurface = activeSurface;
       activeSurface = SURFACE.EDITOR;
     } else if (appSurface && appSurface !== activeSurface && appSurface !== SURFACE.SETTINGS) {
-      // The application moved without us (route change, native shortcut,
-      // user clicked an activity item): adopt observed state (spec §40).
+      // The host application moved (native shortcut, activity click, route):
+      // adopt observed state (§35 navigation observation).
       previousSurface = activeSurface;
       activeSurface = appSurface;
       adoptedFromApp = true;
     }
   }
 
-  // ----- shell chrome decisions -------------------------------------------
-  const quickInputVisible = !!(obs.quickInput && obs.quickInput.visible);
-  const shellMinimized = quickInputVisible; // let VS Code quick input own the screen
+  // ---- shell chrome decisions --------------------------------------------
+  const quickInputVisible = !!(parts.quickInput && parts.quickInput.visible);
+  const shellMinimized = quickInputVisible; // host quick input owns the screen
 
   const titlebarH = obs.measured && obs.measured.titlebarH > 0 ? Math.max(obs.measured.titlebarH, 40) : 44;
   const footerH = 52;
   const headerH = isMobile ? titlebarH : 0;
-  const bottomBarShown = !!(prefs.bottomBar && shellMode !== SHELL_MODE.DESKTOP);
+  const bottomBarShown = !!(FEATURES.mobileShell && prefs.bottomBar && shellMode !== SHELL_MODE.DESKTOP);
   const statusbarH = obs.measured && obs.measured.statusbarH > 0 ? Math.min(obs.measured.statusbarH, 30) : 0;
   const shellBottom = bottomBarShown ? footerH : statusbarH;
 
   const vvH = (st.viewport && st.viewport.height) || 0;
   const usable = Math.max(vvH - headerH - shellBottom, 120);
-  const panelH = prefs.terminalFullscreen ? usable : Math.round(usable * 0.55);
+  const panelH = Math.round(usable * 0.92);
 
   const vars = {
-    '--gdmux-vv-offset': `${(st.viewport && st.viewport.offsetTop) || 0}px`,
-    '--gdmux-vv-height': `${vvH || '100vh'}`,
-    '--gdmux-header-h': `${headerH}px`,
-    '--gdmux-footer-h': `${footerH}px`,
-    '--gdmux-shell-top': `${headerH}px`,
-    '--gdmux-shell-bottom': `${shellBottom}px`,
-    '--gdmux-panel-h': `${panelH}px`,
+    '--gmux-vv-offset': `${(st.viewport && st.viewport.offsetTop) || 0}px`,
+    '--gmux-vv-height': `${vvH || '100vh'}`,
+    '--gmux-header-h': `${headerH}px`,
+    '--gmux-footer-h': `${footerH}px`,
+    '--gmux-shell-top': `${headerH}px`,
+    '--gmux-shell-bottom': `${shellBottom}px`,
+    '--gmux-panel-h': `${panelH}px`,
   };
 
-  // ----- workbench class decisions ----------------------------------------
-  const workbenchAdd = [];
-  const workbenchRemove = ['gdmux-mode-mobile', 'gdmux-mode-compact', 'gdmux-mode-desktop', 'gdmux-immersive'];
-  workbenchAdd.push(`gdmux-mode-${shellMode}`);
-  if (immersiveOn) workbenchAdd.push('gdmux-immersive');
+  // ---- workbench state classes (presentation arm of adapter) -------------
+  const workbenchAdd = [`gmux-mode-${shellMode}`];
+  const workbenchRemove = ['gmux-mode-mobile', 'gmux-mode-compact', 'gmux-mode-desktop', 'gmux-immersive', 'gmux-sidebar-overlay', 'gmux-panel-overlay'];
+  if (immersiveOn) workbenchAdd.push('gmux-immersive');
 
-  const sidebarSurface = [SURFACE.EXPLORER, SURFACE.SEARCH, SURFACE.GIT].indexOf(activeSurface) !== -1;
+  const drawerActive = DRAWER_SURFACES.indexOf(activeSurface) !== -1;
   const terminalActive = activeSurface === SURFACE.TERMINAL;
-
-  if (isMobile && sidebarSurface && !shellMinimized) workbenchAdd.push('gdmux-sidebar-overlay');
-  if (isMobile && terminalActive && !shellMinimized) workbenchAdd.push('gdmux-panel-overlay');
+  if (isMobile && drawerActive && !shellMinimized) workbenchAdd.push('gmux-sidebar-overlay');
+  if (isMobile && terminalActive && !shellMinimized) workbenchAdd.push('gmux-panel-overlay');
 
   const rootAdd = [];
-  const rootRemove = ['gdmux-shell-minimized', 'gdmux-no-footer', 'gdmux-no-header'];
-  if (shellMinimized) rootAdd.push('gdmux-shell-minimized');
-  if (!bottomBarShown) rootAdd.push('gdmux-no-footer');
-  if (!isMobile) rootAdd.push('gdmux-no-header');
+  const rootRemove = ['gmux-shell-minimized', 'gmux-no-footer', 'gmux-no-header'];
+  if (shellMinimized) rootAdd.push('gmux-shell-minimized');
+  if (!bottomBarShown) rootAdd.push('gmux-no-footer');
+  if (!isMobile) rootAdd.push('gmux-no-header');
 
-  // ----- toolbar state ------------------------------------------------------
-  const terminalEnabled = caps.terminal === CAP.DETECTED;
-  const pressedSurface = sidebarSurface || terminalActive ? activeSurface : null;
-  if (!terminalEnabled) {
-    notes.push({ code: FAIL.TERMINAL_NOT_FOUND, level: 'info', msg: 'terminal capability ' + (caps.terminal || CAP.UNKNOWN) + ' — toolbar does not advertise it (spec §20)' });
+  // ---- toolbar state ------------------------------------------------------
+  const terminalEnabled = !!(FEATURES.terminalSurface && caps.terminal === CAP.DETECTED);
+  const pressedSurface = drawerActive || terminalActive ? activeSurface : null;
+  if (!FEATURES.terminalSurface) {
+    notes.push({ code: FAIL.TERMINAL_NOT_DETECTED, level: 'info', msg: 'terminal surface disabled by v0.1 feature flag (SPEC §17)' });
+  } else if (caps.terminal !== CAP.DETECTED) {
+    notes.push({ code: FAIL.TERMINAL_NOT_DETECTED, level: 'warn', msg: `terminal capability unavailable (${caps.terminal || CAP.UNKNOWN})` });
   }
 
-  const headerFile = obs.editor && obs.editor.activeFile ? (obs.editor.activeFile.name || null) : null;
+  const headerFile = activeFile ? activeFile.name || null : null;
 
   return {
-    shellMode, immersiveOn, activeSurface, previousSurface,
+    shellMode, isMobile, immersiveOn, activeSurface, previousSurface,
     adoptedFromApp, fileSelected, fileKey,
     shellMinimized, headerFile, terminalEnabled, pressedSurface, bottomBarShown,
+    quickInputVisible, drawerActive,
     workbenchAdd, workbenchRemove, rootAdd, rootRemove, vars, notes,
   };
 }
 
-/* --------------------------- feature status map --------------------------- */
-// Spec §35/§36: statuses are evidence-based. NO EVIDENCE -> NO VERIFIED CLAIM.
-
+/* --------------------------- feature status map (§38) -------------------- */
+// Evidence-based; NO EVIDENCE → NO VERIFIED CLAIM (I-15).
 function computeFeatureStatuses(ctx) {
   const caps = ctx.caps || {};
   const stats = ctx.stats || {};
-  const vvUsed = !!ctx.vvUsed;
+  const vvUsed = ctx.vvUsed;
   const s = (detected, validated, blockedReason) => {
     if (blockedReason) return { status: FSTATUS.BLOCKED, basis: blockedReason };
-    if (validated) return { status: FSTATUS.VERIFIED, basis: 'validated in this session' };
-    if (detected) return { status: FSTATUS.PARTIALLY_VERIFIED, basis: 'detected, not yet validated' };
+    if (validated) return { status: FSTATUS.VERIFIED, basis: 'expected state transition validated this session' };
+    if (detected) return { status: FSTATUS.PARTIALLY_VERIFIED, basis: 'detected; operation not yet validated' };
     return { status: FSTATUS.PROVISIONAL, basis: 'awaiting evidence' };
   };
   return [
+    ['Mobile shell', s(true, !!stats.shellMounted, null)],
     ['Mobile viewport detection', vvUsed
-      ? { status: stats.viewportApplied ? FSTATUS.VERIFIED : FSTATUS.PARTIALLY_VERIFIED, basis: vvUsed === 'visualViewport' ? 'visualViewport observed' : 'window resize fallback (visualViewport unavailable)' }
+      ? { status: stats.viewportApplied ? FSTATUS.VERIFIED : FSTATUS.PARTIALLY_VERIFIED,
+          basis: vvUsed === 'visualViewport' ? 'visualViewport observed' : 'window resize fallback (visualViewport unavailable)' }
       : { status: FSTATUS.PROVISIONAL, basis: 'no viewport sample yet' }],
     ['Editor immersive mode', s(true, !!stats.immersiveApplied, null)],
-    ['Explorer drawer', s(caps.explorer === CAP.DETECTED, !!stats.explorerValidated, caps.explorer === CAP.DETECTED ? null : 'explorer ' + (caps.explorer || CAP.UNKNOWN))],
-    ['Search surface', s(caps.search === CAP.DETECTED, !!stats.searchValidated, caps.search === CAP.DETECTED ? null : 'search ' + (caps.search || CAP.UNKNOWN))],
+    ['Explorer drawer', s(caps.explorer === CAP.DETECTED, !!stats.explorerValidated, caps.explorer === CAP.DETECTED ? null : `explorer ${caps.explorer || CAP.UNKNOWN}`)],
+    ['Search surface', s(caps.search === CAP.DETECTED, !!stats.searchValidated, caps.search === CAP.DETECTED ? null : `search ${caps.search || CAP.UNKNOWN}`)],
     ['Source Control surface', caps.sourceControl === CAP.DETECTED
-      ? { status: FSTATUS.PARTIALLY_VERIFIED, basis: 'surface repositions the existing SCM view; Git state stays with GitHub (spec §19)' }
-      : { status: FSTATUS.BLOCKED, basis: 'source control ' + (caps.sourceControl || CAP.UNKNOWN) }],
-    ['Terminal surface', caps.terminal === CAP.DETECTED
-      ? { status: FSTATUS.PARTIALLY_VERIFIED, basis: 'terminal detected; fullscreen overlay pending validation' }
-      : { status: FSTATUS.BLOCKED, basis: 'terminal ' + (caps.terminal || CAP.UNKNOWN) + (ctx.terminalNote ? ` (${ctx.terminalNote})` : '') }],
-    ['Gesture navigation', { status: FSTATUS.PROVISIONAL, basis: 'conservative edge swipes only; never over the editor (spec §23)' }],
-    ['Git operations', { status: FSTATUS.OUT_OF_SCOPE, basis: 'GitHub/VS Code remains authoritative (spec §2, §19, §46)' }],
-    ['Unknown future GitHub DOM', { status: FSTATUS.BLOCKED, basis: 'no evidence for layouts not yet observed (spec §43)' }],
+      ? { status: FSTATUS.PARTIALLY_VERIFIED, basis: 'repositions the existing SCM view; no GMUX-owned Git state (§5/§33)' }
+      : { status: FSTATUS.BLOCKED, basis: `source control ${caps.sourceControl || CAP.UNKNOWN}` }],
+    ['Terminal surface', FEATURES.terminalSurface
+      ? s(caps.terminal === CAP.DETECTED, !!stats.terminalValidated, caps.terminal === CAP.DETECTED ? null : `terminal ${caps.terminal || CAP.UNKNOWN}`)
+      : { status: FSTATUS.OUT_OF_SCOPE, basis: 'disabled by v0.1 feature flag (§17); deferred' }],
+    ['Gesture navigation', { status: FSTATUS.OUT_OF_SCOPE, basis: 'deferred from v0.1 (§2, §36 gestures=false, §54)' }],
+    ['Android Back', { status: stats.backHandled ? FSTATUS.VERIFIED : FSTATUS.PARTIALLY_VERIFIED,
+      basis: stats.backHandled ? 'back consumption observed this session' : 'history layering active; device confirmation pending (§34)' }],
+    ['Git operations', { status: FSTATUS.OUT_OF_SCOPE, basis: 'GitHub/VS Code remains the sole authority (§4/§5/§33)' }],
+    ['Unknown future GitHub DOM', { status: FSTATUS.BLOCKED, basis: 'no evidence for layouts not yet observed (§59 stop conditions)' }],
   ];
 }
 
 /* ===========================================================================
  * §D GITHUB-DEV ADAPTER
- * ---------------------------------------------------------------------------
- * ALL GitHub/VS Code DOM knowledge is isolated here (spec §6, §9, §41).
- * The kernel above contains zero GitHub selectors.
- *
- * Selector preference (spec §9): semantic attributes > ARIA labels > stable
- * IDs > stable relationships > structural > class names. Generated classes
- * are a last resort (none are used in v0.1).
- *
- * Evidence base for the targets below: docs/dom-evidence.md (observed
- * 2026-09-15 against github.dev -> vscode.dev and microsoft/vscode sources).
+ * ALL GitHub/VS Code DOM knowledge lives in this section (invariant I-02).
+ * Selector preference: semantic attributes > ARIA labels > stable IDs >
+ * stable relationships > structural classes. Evidence: docs/dom-evidence.md.
+ * Every operation returns STRUCTURED results (§9): {ok, operation, reason?,
+ * evidence}. No operation ever silently implies success (I-15).
  * =========================================================================*/
 
 const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
-  // --- stable structural targets -----------------------------------------
   const WB = '.monaco-workbench';
   const PARTS = {
     titlebar: '.part.titlebar',
-    activitybar: '.part.activitybar',
-    sidebar: '.part.sidebar',
+    activityBar: '.part.activitybar',
+    sideBar: '.part.sidebar',
     editor: '.part.editor',
     panel: '.part.panel',
-    statusbar: '.part.statusbar',
+    statusBar: '.part.statusbar',
   };
-  // View containers (stable semantic IDs, spec §9 rank 3).
-  const VIEW_IDS = { explorer: 'workbench.view.explorer', search: 'workbench.view.search', scm: 'workbench.view.scm' };
+  const VIEW_IDS = {
+    explorer: 'workbench.view.explorer',
+    search: 'workbench.view.search',
+    scm: 'workbench.view.scm',
+  };
   const VIEW_LABELS = { explorer: ['explorer'], search: ['search'], scm: ['source control'] };
   const VIEW_CONTENT = {
     explorer: '.explorer-folders-view, .explorer-view',
     search: '.search-view',
     scm: '.scm-view',
   };
-  // Synthetic keybindings (fallback/secondary mechanisms). KeyCode values are
-  // the legacy DOM keyCode constants VS Code's keybinding service understands.
+  // Legacy DOM keyCode constants for VS Code's window-level keybinding
+  // service (secondary actuation path; INFERRED until the effect is observed).
   const KEYBINDINGS = {
     openExplorer: { code: 'KeyE', key: 'E', keyCode: 69, ctrl: true, shift: true },
     openSearch: { code: 'KeyF', key: 'F', keyCode: 70, ctrl: true, shift: true },
-    openGit: { code: 'KeyG', key: 'G', keyCode: 71, ctrl: true, shift: true },
-    toggleTerminal: { code: 'Backquote', key: '`', keyCode: 192, ctrl: true },
+    openSourceControl: { code: 'KeyG', key: 'G', keyCode: 71, ctrl: true, shift: true },
     toggleSidebar: { code: 'KeyB', key: 'B', keyCode: 66, ctrl: true },
     togglePanel: { code: 'KeyJ', key: 'J', keyCode: 74, ctrl: true },
     commandPalette: { code: 'KeyP', key: 'P', keyCode: 80, ctrl: true, shift: true },
     quickOpen: { code: 'KeyP', key: 'P', keyCode: 80, ctrl: true },
     openSettings: { code: 'Comma', key: ',', keyCode: 188, ctrl: true },
+    escape: { code: 'Escape', key: 'Escape', keyCode: 27 },
   };
 
   function qs(sel, root) { try { return (root || document).querySelector(sel); } catch (e) { return null; } }
-  function qsa(sel, root) { try { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); } catch (e) { return []; } }
+  function qsa(sel, root) {
+    try { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); } catch (e) { return []; }
+  }
   function isVisible(el) {
     if (!el) return false;
     const style = window.getComputedStyle(el);
     return style.display !== 'none' && style.visibility !== 'hidden' && el.getClientRects().length > 0;
   }
+  function opResult(operation, ok, evidence, reason) {
+    const out = { ok: !!ok, operation, evidence: evidence || {} };
+    if (reason) out.reason = reason;
+    return out;
+  }
 
   function workbench() { return qs(WB); }
-  function isPresent() { return !!workbench(); }
 
-  // Find an activity-bar action for a view container. Preference order:
-  // stable ID -> aria-label (accessible name) -> title attribute.
+  /* ----------------------------- observation (§14) ----------------------- */
+  function observe() {
+    const wb = workbench();
+    const hostExpectation = terminalHostExpectation(location.hostname);
+    const obs = {
+      application: { detected: !!wb, target: ADAPTER_ID },
+      surfaces: {
+        editor: { present: false, visible: false, activeFile: null },
+        explorer: { present: false, visible: false },
+        search: { present: false, visible: false },
+        sourceControl: { present: false, visible: false },
+        terminal: { present: false, visible: false, hostExpectation },
+      },
+      parts: {
+        titlebar: { present: false, visible: false },
+        activityBar: { present: false },
+        sideBar: { present: false, visible: false },
+        editor: { present: false },
+        panel: { present: false, visible: false },
+        statusBar: { present: false },
+        quickInput: { present: false, visible: false },
+      },
+      measured: { titlebarH: 0, statusbarH: 0 },
+      sidebarActiveView: null,
+      appSurface: null,
+      viewport: { width: window.innerWidth || 0, height: window.innerHeight || 0 },
+      route: { url: location.href },
+    };
+    if (!wb) return obs;
+    const cls = wb.classList;
+    const sidebarHidden = cls.contains('nosidebar');
+    const panelHidden = cls.contains('nopanel');
+
+    const titlebar = qs(PARTS.titlebar, wb);
+    obs.parts.titlebar.present = !!titlebar;
+    obs.parts.titlebar.visible = isVisible(titlebar);
+    obs.measured.titlebarH = titlebar ? titlebar.offsetHeight : 0;
+    obs.parts.activityBar.present = !!qs(PARTS.activityBar, wb);
+
+    const sidebar = qs(PARTS.sideBar, wb);
+    obs.parts.sideBar.present = !!sidebar;
+    obs.parts.sideBar.visible = !!sidebar && !sidebarHidden && isVisible(sidebar);
+
+    obs.parts.editor.present = !!qs(PARTS.editor, wb);
+    const panel = qs(PARTS.panel, wb);
+    obs.parts.panel.present = !!panel;
+    obs.parts.panel.visible = !!panel && !panelHidden && isVisible(panel);
+    const statusbar = qs(PARTS.statusBar, wb);
+    obs.parts.statusBar.present = !!statusbar;
+    obs.measured.statusbarH = statusbar ? statusbar.offsetHeight : 0;
+
+    // Editor + active file (data-uri is a semantic Monaco attribute).
+    const monacoEditor = qs('.monaco-editor', wb);
+    obs.surfaces.editor.present = !!monacoEditor;
+    obs.surfaces.editor.visible = !!monacoEditor && isVisible(monacoEditor);
+    obs.surfaces.editor.activeFile = readActiveFile(wb);
+
+    // Sidebar content views (presence ≠ visibility; §12 uncertainty model).
+    obs.surfaces.explorer.present = !!qs(VIEW_CONTENT.explorer, wb);
+    obs.surfaces.search.present = !!qs(VIEW_CONTENT.search, wb);
+    obs.surfaces.sourceControl.present = !!qs(VIEW_CONTENT.scm, wb);
+    obs.surfaces.explorer.visible = obs.parts.sideBar.visible && !!qs(VIEW_CONTENT.explorer, sidebar || wb);
+    obs.surfaces.search.visible = obs.parts.sideBar.visible && !!qs(VIEW_CONTENT.search, sidebar || wb);
+    obs.surfaces.sourceControl.visible = obs.parts.sideBar.visible && !!qs(VIEW_CONTENT.scm, sidebar || wb);
+    if (obs.parts.sideBar.visible) obs.sidebarActiveView = sidebarActiveViewKey(sidebar);
+
+    // Terminal renders through xterm.js when the host provides one.
+    const xterm = qs('.xterm', wb);
+    obs.surfaces.terminal.present = !!xterm || !!qs('.part.panel .terminal-outer-container', wb);
+    obs.surfaces.terminal.visible = obs.parts.panel.visible && !!xterm && isVisible(xterm);
+
+    const qi = qs('.quick-input-widget', wb);
+    obs.parts.quickInput.present = !!qi;
+    obs.parts.quickInput.visible = !!qi && !qi.classList.contains('hidden') && isVisible(qi);
+
+    // ---- derive host-side surface evidence (kernel normalizes decisions) --
+    if (obs.parts.quickInput.visible) obs.appSurface = null; // transient overlay
+    else if (obs.surfaces.terminal.visible) obs.appSurface = SURFACE.TERMINAL;
+    else if (obs.parts.sideBar.visible && obs.sidebarActiveView) {
+      obs.appSurface = obs.sidebarActiveView === 'scm' ? SURFACE.SOURCE_CONTROL : obs.sidebarActiveView;
+    } else if (obs.surfaces.editor.present) obs.appSurface = SURFACE.EDITOR;
+    return obs;
+  }
+
+  function sidebarActiveViewKey(sidebarEl) {
+    const sb = sidebarEl || qs(PARTS.sideBar);
+    if (!sb) return null;
+    const keys = Object.keys(VIEW_CONTENT);
+    for (let i = 0; i < keys.length; i++) {
+      if (qs(VIEW_CONTENT[keys[i]], sb)) return keys[i];
+    }
+    return null;
+  }
+
+  function readActiveFile(wb) {
+    let uri = null;
+    const ed = qs('.monaco-editor[data-uri]', wb);
+    if (ed) uri = ed.getAttribute('data-uri');
+    let name = null;
+    const tab = qs('.part.editor .tab.active .label-name, .part.editor .tab.active', wb);
+    if (tab) name = (tab.textContent || '').trim();
+    if (!name) {
+      const crumbs = qsa('.monaco-breadcrumbs .monaco-breadcrumb-item', wb);
+      if (crumbs.length) {
+        name = (crumbs[crumbs.length - 1].getAttribute('title') || crumbs[crumbs.length - 1].textContent || '').trim();
+      }
+    }
+    if (!name && uri) {
+      try { name = decodeURIComponent(uri.split(/[\\/]/).pop() || ''); }
+      catch (e) { name = uri.split(/[\\/]/).pop() || ''; }
+    }
+    if (!name && !uri) return null;
+    return { name: name || null, uri: uri || null, evidence: uri ? EVIDENCE.OBSERVED : EVIDENCE.INFERRED };
+  }
+
+  /* --------------------------- capability probe (§12) ------------------- */
+  function capabilities(snapshot) { return classifyCapabilities(snapshot || observe()); }
+
+  /* ------------------------------ mechanisms ----------------------------- */
   function findActivityAction(viewKey) {
-    const bar = qs(PARTS.activitybar);
+    const bar = qs(PARTS.activityBar);
     if (!bar) return null;
     const id = VIEW_IDS[viewKey];
     if (id) {
       const byId = bar.querySelector(`[id="${id}"]`);
-      if (byId) {
-        const label = byId.matches('.action-label') ? byId : byId.querySelector('.action-label');
-        if (label) return label;
-        if (byId.classList && byId.classList.contains('action-item')) return byId;
-        return byId;
-      }
+      if (byId) return byId.matches('.action-label') ? byId : (byId.querySelector('.action-label') || byId);
     }
     const prefixes = VIEW_LABELS[viewKey] || [];
     const candidates = qsa('.action-label', bar);
@@ -584,312 +783,287 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
     return null;
   }
 
-  function clickElement(el) {
-    if (!el) return false;
-    try { el.click(); return true; } catch (e) { return false; }
-  }
-
-  // Dispatch a synthetic keybinding to the window. VS Code Web's keybinding
-  // service listens at window level. Evidence level: INFERRED until the
-  // expected effect is observed (§34) — the reconciler validates effects.
   function dispatchKeybinding(name) {
     const b = KEYBINDINGS[name];
     if (!b) return false;
     let useMeta = false;
-    try { useMeta = /mac/i.test((navigator.platform || '') + ' ' + navigator.userAgent) && b.ctrl; } catch (e) { /* noop */ }
-    function make(type) {
+    try { useMeta = /mac/i.test((navigator.platform || '') + ' ' + navigator.userAgent) && !!b.ctrl; } catch (e) { /* noop */ }
+    const make = (type) => {
       const init = {
         code: b.code, key: b.key, bubbles: true, cancelable: true,
         ctrlKey: !!b.ctrl && !useMeta, metaKey: useMeta, shiftKey: !!b.shift, altKey: false,
       };
       let ev;
-      try {
-        init.keyCode = b.keyCode; init.which = b.keyCode;
-        ev = new window.KeyboardEvent(type, init);
-      } catch (e) {
-        delete init.keyCode; delete init.which;
-        ev = new window.KeyboardEvent(type, init);
-      }
+      try { init.keyCode = b.keyCode; init.which = b.keyCode; ev = new window.KeyboardEvent(type, init); }
+      catch (e) { delete init.keyCode; delete init.which; ev = new window.KeyboardEvent(type, init); }
       return ev;
+    };
+    try { window.dispatchEvent(make('keydown')); window.dispatchEvent(make('keyup')); return true; }
+    catch (e) { return false; }
+  }
+
+  function clickElement(el) { if (!el) return false; try { el.click(); return true; } catch (e) { return false; } }
+
+  // ---- host-DOM knowledge for the session's observer / input guards ------
+  // Per invariant I-02 even these selectors live in the adapter; the kernel
+  // only receives boolean answers.
+  const RELEVANT_SELECTOR = '.monaco-workbench, .part, .pane-composite-part, .monaco-editor, .xterm, .quick-input-widget, .tab';
+  const PROTECTED_SELECTOR = '.monaco-editor, textarea, input, select, [contenteditable="true"], .xterm, .monaco-list';
+
+  function matchesAny(el, selectorList) {
+    if (!el || typeof el.matches !== 'function') return false;
+    const groups = selectorList.split(',');
+    for (let i = 0; i < groups.length; i++) {
+      try { if (el.matches(groups[i].trim())) return true; } catch (e) { /* unknown selector in this host */ }
     }
+    return false;
+  }
+
+  // Whether a DOM mutation at node may represent an application change the
+  // reconciler should react to. Userscript-owned nodes always return false.
+  function isRelevantNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.getAttribute && node.getAttribute(OWNER_ATTR) === OWNER_VALUE) return false;
     try {
-      window.dispatchEvent(make('keydown'));
-      window.dispatchEvent(make('keyup'));
-      return true;
-    } catch (e) { return false; }
+      if (matchesAny(node, RELEVANT_SELECTOR)) return true;
+      if (typeof node.querySelector === 'function' && node.querySelector(RELEVANT_SELECTOR)) return true;
+    } catch (e) { /* noop */ }
+    return false;
   }
 
-  // Which sidebar view is currently rendered (content-based, not label-based).
-  function sidebarActiveViewKey() {
-    const sb = qs(PARTS.sidebar);
-    if (!sb) return null;
-    for (const key of Object.keys(VIEW_CONTENT)) {
-      if (qs(VIEW_CONTENT[key], sb)) return key;
-    }
-    return null;
+  // Whether an event target sits inside the editor protection zone (§30).
+  function isProtectedTarget(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try { if (typeof node.closest === 'function' && node.closest(PROTECTED_SELECTOR)) return true; } catch (e) { /* noop */ }
+    return matchesAny(node, PROTECTED_SELECTOR);
   }
 
-  function readActiveFile() {
-    // 1) semantic attribute: Monaco exposes data-uri on editor nodes (OBSERVED).
-    let uri = null;
-    const ed = qs('.monaco-editor[data-uri]');
-    if (ed) uri = ed.getAttribute('data-uri');
-    // 2) active tab label (stable structural relationship).
-    let name = null;
-    const tab = qs('.part.editor .tab.active .label-name, .part.editor .tab.active');
-    if (tab) name = (tab.textContent || '').trim();
-    // 3) breadcrumb tail fallback.
-    if (!name) {
-      const crumbs = qsa('.monaco-breadcrumbs .monaco-breadcrumb-item');
-      if (crumbs.length) name = ((crumbs[crumbs.length - 1].getAttribute('title')) || crumbs[crumbs.length - 1].textContent || '').trim();
-    }
-    if (!name && uri) {
-      try { name = decodeURIComponent(uri.split(/[\\/]/).pop() || ''); } catch (e) { name = uri.split(/[\\/]/).pop() || ''; }
-    }
-    if (!name && !uri) return null;
-    return {
-      name: name || null,
-      uri: uri || null,
-      evidence: uri ? EVIDENCE.OBSERVED : EVIDENCE.INFERRED,
-    };
+  /* ------------------------ structured operations (§9) ------------------- */
+
+  // detect() — application detection evidence (§6 step 5).
+  function detect() {
+    const found = !!workbench();
+    return opResult('detect', found, {
+      workbenchFound: found,
+      level: found ? EVIDENCE.OBSERVED : EVIDENCE.INFERRED,
+    }, found ? null : FAIL.APPLICATION_NOT_DETECTED);
   }
 
-  function observe() {
-    const wb = workbench();
-    const obs = {
-      workbench: { present: !!wb, sidebarHidden: false, panelHidden: false, fullscreen: false },
-      parts: {
-        titlebar: { present: false, visible: false }, activitybar: { present: false },
-        sidebar: { present: false, visible: false }, editor: { present: false },
-        panel: { present: false, visible: false }, statusbar: { present: false },
-      },
-      editor: { present: false, activeFile: null },
-      views: {
-        explorer: { present: false }, search: { present: false }, scm: { present: false },
-        sidebarActiveView: null,
-      },
-      terminal: { present: false, visible: false, hostExpectation: terminalHostExpectation(location.hostname) },
-      quickInput: { visible: false },
-      measured: { titlebarH: 0, statusbarH: 0 },
-      appSurface: null,
-    };
-    if (!wb) return obs;
-    const cls = wb.classList;
-    obs.workbench.sidebarHidden = cls.contains('nosidebar');
-    obs.workbench.panelHidden = cls.contains('nopanel');
-    obs.workbench.fullscreen = cls.contains('fullscreen');
-
-    const titlebar = qs(PARTS.titlebar, wb);
-    obs.parts.titlebar.present = !!titlebar;
-    obs.parts.titlebar.visible = isVisible(titlebar);
-    obs.measured.titlebarH = titlebar ? titlebar.offsetHeight : 0;
-    obs.parts.activitybar.present = !!qs(PARTS.activitybar, wb);
-    const sidebar = qs(PARTS.sidebar, wb);
-    obs.parts.sidebar.present = !!sidebar;
-    obs.parts.sidebar.visible = !!sidebar && !obs.workbench.sidebarHidden && isVisible(sidebar);
-    obs.parts.editor.present = !!qs(PARTS.editor, wb);
-    const panel = qs(PARTS.panel, wb);
-    obs.parts.panel.present = !!panel;
-    obs.parts.panel.visible = !!panel && !obs.workbench.panelHidden && isVisible(panel);
-    const statusbar = qs(PARTS.statusbar, wb);
-    obs.parts.statusbar.present = !!statusbar;
-    obs.measured.statusbarH = statusbar ? statusbar.offsetHeight : 0;
-
-    obs.editor.present = !!qs('.monaco-editor', wb);
-    obs.editor.activeFile = obs.editor.present ? readActiveFile() : null;
-    obs.views.explorer.present = !!qs(VIEW_CONTENT.explorer, wb);
-    obs.views.search.present = !!qs(VIEW_CONTENT.search, wb);
-    obs.views.scm.present = !!qs(VIEW_CONTENT.scm, wb);
-    if (obs.parts.sidebar.visible) obs.views.sidebarActiveView = sidebarActiveViewKey();
-
-    // xterm.js root class is the terminal renderer VS Code Web embeds.
-    const xterm = qs('.xterm', wb);
-    obs.terminal.present = !!xterm || !!qs('.part.panel .terminal-outer-container', wb);
-    obs.terminal.visible = obs.parts.panel.visible && !!xterm && isVisible(xterm);
-
-    const qi = qs('.quick-input-widget', wb);
-    obs.quickInput.visible = !!qi && !qi.classList.contains('hidden') && isVisible(qi);
-
-    // ----- derive app-side surface evidence (spec §7, §40) ----------------
-    if (obs.quickInput.visible) {
-      obs.appSurface = null; // transient overlay — kernel keeps its state
-    } else if (obs.terminal.visible) {
-      obs.appSurface = SURFACE.TERMINAL;
-    } else if (obs.parts.sidebar.visible && obs.views.sidebarActiveView) {
-      obs.appSurface = obs.views.sidebarActiveView === 'scm' ? SURFACE.GIT : obs.views.sidebarActiveView;
-    } else if (obs.editor.present) {
-      obs.appSurface = SURFACE.EDITOR;
-    }
-    return obs;
+  function missingWorkbenchResult(operation, code) {
+    return opResult(operation, false, {
+      elementFound: false, invoked: false, mechanism: 'none',
+      stateChanged: false, level: EVIDENCE.OBSERVED,
+    }, code);
   }
 
-  function capabilities(obs) { return classifyCapabilities(obs || observe()); }
-
-  // ----- surface actions (return {ok, mechanism}) --------------------------
-
-  function openSidebarView(viewKey) {
+  function openView(viewKey, operation) {
+    const failCode = viewKey === 'explorer' ? FAIL.EXPLORER_NOT_DETECTED
+      : viewKey === 'search' ? FAIL.SEARCH_NOT_DETECTED : FAIL.SOURCE_CONTROL_NOT_DETECTED;
+    if (!workbench()) return missingWorkbenchResult(operation, failCode);
+    const before = observe();
+    const alreadyOpen = before.parts.sideBar.visible && before.sidebarActiveView === viewKey;
+    if (alreadyOpen) {
+      return opResult(operation, true, {
+        elementFound: true, invoked: false, mechanism: 'already-open',
+        stateChanged: false, level: EVIDENCE.VALIDATED,
+      });
+    }
     const action = findActivityAction(viewKey);
-    if (action) {
-      // If the view already shows in a visible sidebar we are done.
-      const o = observe();
-      if (o.parts.sidebar.visible && o.views.sidebarActiveView === viewKey) {
-        return { ok: true, mechanism: 'already-open' };
-      }
-      if (clickElement(action)) return { ok: true, mechanism: 'activity-click' };
+    let mechanism = 'none';
+    let invoked = false;
+    if (action) { invoked = clickElement(action); mechanism = 'activity-click'; }
+    if (!invoked) {
+      const binding = viewKey === 'explorer' ? 'openExplorer' : viewKey === 'search' ? 'openSearch' : 'openSourceControl';
+      invoked = dispatchKeybinding(binding);
+      if (invoked) mechanism = 'keybinding';
     }
-    const binding = viewKey === 'explorer' ? 'openExplorer' : viewKey === 'search' ? 'openSearch' : 'openGit';
-    if (dispatchKeybinding(binding)) return { ok: true, mechanism: 'keybinding' };
-    return { ok: false, mechanism: 'none' };
+    const after = observe();
+    const stateChanged = after.parts.sideBar.visible && after.sidebarActiveView === viewKey;
+    const elementFound = !!action;
+    const level = stateChanged ? EVIDENCE.VALIDATED : invoked ? EVIDENCE.INFERRED : EVIDENCE.OBSERVED;
+    return opResult(operation, invoked, {
+      elementFound, invoked, mechanism, stateChanged, level,
+    }, invoked ? null : failCode);
   }
 
-  function closeSidebar() {
-    // Clicking the active activity item toggles the sidebar off.
-    const viewKey = sidebarActiveViewKey() || 'explorer';
-    const action = findActivityAction(viewKey);
-    if (action && clickElement(action)) return { ok: true, mechanism: 'activity-click' };
-    if (dispatchKeybinding('toggleSidebar')) return { ok: true, mechanism: 'keybinding' };
-    return { ok: false, mechanism: 'none' };
-  }
+  const openExplorer = () => openView('explorer', 'open-explorer');
+  const openSearch = () => openView('search', 'open-search');
+  const openSourceControl = () => openView('scm', 'open-source-control');
 
-  function openTerminal() {
-    if (dispatchKeybinding('toggleTerminal')) return { ok: true, mechanism: 'keybinding' };
-    return { ok: false, mechanism: 'none' };
-  }
-
-  function closePanel() {
-    if (dispatchKeybinding('togglePanel')) return { ok: true, mechanism: 'keybinding' };
-    return { ok: false, mechanism: 'none' };
+  // closePanels() closes any open sidebar drawer AND/OR the bottom panel.
+  function closePanels() {
+    if (!workbench()) {
+      return missingWorkbenchResult('close-panels', FAIL.DOM_CHANGED);
+    }
+    const before = observe();
+    let sidebarInvoked = false;
+    let panelInvoked = false;
+    if (before.parts.sideBar.visible) {
+      const viewKey = before.sidebarActiveView || 'explorer';
+      const action = findActivityAction(viewKey);
+      sidebarInvoked = clickElement(action) || dispatchKeybinding('toggleSidebar');
+    }
+    if (before.surfaces.terminal.visible) panelInvoked = dispatchKeybinding('togglePanel');
+    const after = observe();
+    const sidebarWasClosed = before.parts.sideBar.visible && !after.parts.sideBar.visible;
+    const panelWasClosed = before.surfaces.terminal.visible && !after.surfaces.terminal.visible;
+    const sidebarClosed = !after.parts.sideBar.visible;
+    const panelClosed = !after.surfaces.terminal.visible;
+    const stateChanged = sidebarWasClosed || panelWasClosed;
+    const hadSomethingToClose = before.parts.sideBar.visible || before.surfaces.terminal.visible;
+    const ok = !hadSomethingToClose || stateChanged || sidebarInvoked || panelInvoked;
+    return opResult('close-panels', ok, {
+      elementFound: true,
+      sidebarInvoked, panelInvoked,
+      sidebarClosed, panelClosed,
+      stateChanged,
+      level: !hadSomethingToClose ? EVIDENCE.VALIDATED : stateChanged ? EVIDENCE.VALIDATED : EVIDENCE.INFERRED,
+    });
   }
 
   function focusEditor() {
-    // Monaco's hidden input is the sanctioned keyboard focus target; we never
-    // synthesize clicks inside the editor (spec §22 Monaco protection).
     const ta = qs('.monaco-editor textarea.inputarea, .monaco-editor textarea');
-    if (ta) {
-      try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) { /* noop */ } }
-      const focused = document.activeElement && ta.contains
-        ? (ta === document.activeElement || ta.contains(document.activeElement))
-        : document.activeElement === ta;
-      return { ok: focused, mechanism: 'textarea-focus', evidence: focused ? EVIDENCE.VALIDATED : EVIDENCE.INFERRED };
+    if (!ta) {
+      return opResult('focus-editor', false,
+        { elementFound: false, stateChanged: false, level: EVIDENCE.OBSERVED }, FAIL.EDITOR_NOT_DETECTED);
     }
-    return { ok: false, mechanism: 'none' };
+    try { ta.focus({ preventScroll: true }); }
+    catch (e) { try { ta.focus(); } catch (e2) { /* noop */ } }
+    const focused = document.activeElement === ta ||
+      (ta.contains && document.activeElement && ta.contains(document.activeElement));
+    return opResult('focus-editor', focused, {
+      elementFound: true, stateChanged: focused,
+      level: focused ? EVIDENCE.VALIDATED : EVIDENCE.INFERRED,
+    }, focused ? null : FAIL.COMMAND_FAILED);
   }
 
-  function getActiveFile() { return readActiveFile(); }
+  // Host quick-input dismissal for Android Back (modal-class host surface).
+  function dismissQuickInput() {
+    const before = observe();
+    if (!before.parts.quickInput.visible) {
+      return opResult('dismiss-quickinput', true,
+        { elementFound: before.parts.quickInput.present, stateChanged: false, level: EVIDENCE.VALIDATED });
+    }
+    const invoked = dispatchKeybinding('escape');
+    const after = observe();
+    const stateChanged = !after.parts.quickInput.visible;
+    return opResult('dismiss-quickinput', invoked, {
+      elementFound: true, invoked, stateChanged,
+      level: stateChanged ? EVIDENCE.VALIDATED : EVIDENCE.INFERRED,
+    });
+  }
 
   return {
-    name: 'github-dev',
+    id: ADAPTER_ID,
     version: ADAPTER_VERSION,
-    isPresent, workbench, observe, capabilities,
-    openSidebarView, closeSidebar, openTerminal, closePanel,
-    focusEditor, getActiveFile, dispatchKeybinding, findActivityAction,
+    detect, observe, capabilities,
+    focusEditor, openExplorer, openSearch, openSourceControl, closePanels,
+    dismissQuickInput,
+    // internal mechanisms (shell/command layer may use as secondary paths)
+    workbench, dispatchKeybinding, findActivityAction,
+    // host-DOM knowledge the kernel needs as boolean answers (I-02)
+    isRelevantNode, isProtectedTarget,
   };
 })() : null;
 
 /* ===========================================================================
- * §E ADAPTER STYLESHEET — presentation arm of the adapter.
- * ---------------------------------------------------------------------------
- * Spec §26: everything is namespaced (.gdmux-* / #gdmux-root); no broad
- * element rules. The few rules touching VS Code parts are scoped under
- * gdmux-* state classes the userscript itself toggles.
- * Spec §27: controlled z-index ladder: base 900 < surface 910 < drawer 920 <
- * modal 930 < shell 940 < diagnostic 950. No escalation wars.
+ * §E NAMESPACED STYLESHEET (§41/§42)
+ * All selectors are namespaced: #github-mobile-ux / .gmux-*. Host overrides
+ * only apply under gmux-* state classes the userscript itself toggles.
+ * No global element rules. !important is isolated to layout-critical host
+ * overrides where VS Code's own grid would otherwise win.
+ * Z-ladder (controlled, no escalation): drawer/panel 920 · surface modal 930
+ * · shell/revive 940.
  * =========================================================================*/
 
-const STYLE_ID = 'gdmux-style';
 const CSS_TEXT = [
   '/* GMUX shell chrome */',
-  '#gdmux-root{position:fixed;inset:0;pointer-events:none;z-index:940;',
+  `#${ROOT_ID}{position:fixed;inset:0;pointer-events:none;z-index:940;`,
   ' font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.3;',
   ' color:var(--vscode-foreground,#cccccc);}',
-  '#gdmux-root button{pointer-events:auto;font:inherit;color:inherit;background:transparent;border:0;padding:0;cursor:pointer;}',
-  '#gdmux-root .gdmux-visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}',
+  `#${ROOT_ID} .gmux-button{pointer-events:auto;font:inherit;color:inherit;background:transparent;border:0;padding:0;cursor:pointer;}`,
+  `#${ROOT_ID} .gmux-visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}`,
 
-  '.gdmux-header{position:absolute;left:0;right:0;top:var(--gdmux-vv-offset,0px);height:var(--gdmux-header-h,44px);',
+  '.gmux-header{position:absolute;left:0;right:0;top:var(--gmux-vv-offset,0px);height:var(--gmux-header-h,44px);',
   ' display:flex;align-items:center;gap:2px;padding:0 2px;pointer-events:auto;',
   ' background:var(--vscode-titleBar-activeBackground,var(--vscode-sideBar-background,#252526));',
   ' border-bottom:1px solid var(--vscode-titleBar-activeBorder,rgba(128,128,128,.2));transition:transform .15s ease;}',
-  '.gdmux-icon-btn{flex:0 0 auto;width:42px;height:38px;font-size:18px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;}',
-  '.gdmux-header-file{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:center;height:38px;padding:0 6px;border-radius:6px;font-size:13px;}',
-  '.gdmux-header-file .gdmux-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}',
-  '.gdmux-icon-btn:hover,.gdmux-header-file:hover{background:var(--vscode-toolbar-hoverBackground,rgba(128,128,128,.18));}',
-  '.gdmux-icon-btn:focus-visible,.gdmux-toolbar button:focus-visible,.gdmux-modal button:focus-visible{outline:2px solid var(--vscode-focusBorder,#007fd4);outline-offset:-2px;}',
+  '.gmux-icon-button{flex:0 0 auto;width:42px;height:38px;font-size:18px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;}',
+  '.gmux-header-file{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:center;height:38px;padding:0 6px;border-radius:6px;font-size:13px;}',
+  '.gmux-header-file .gmux-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}',
+  '.gmux-icon-button:hover,.gmux-header-file:hover{background:var(--vscode-toolbar-hoverBackground,rgba(128,128,128,.18));}',
+  '.gmux-icon-button:focus-visible,.gmux-toolbar .gmux-button:focus-visible,.gmux-surface .gmux-button:focus-visible{outline:2px solid var(--vscode-focusBorder,#007fd4);outline-offset:-2px;}',
 
-  '.gdmux-toolbar{position:absolute;left:0;right:0;',
-  ' top:calc(var(--gdmux-vv-offset,0px) + var(--gdmux-vv-height,100vh) - var(--gdmux-footer-h,52px));',
-  ' height:var(--gdmux-footer-h,52px);display:flex;pointer-events:auto;',
+  '.gmux-toolbar{position:absolute;left:0;right:0;',
+  ' top:calc(var(--gmux-vv-offset,0px) + var(--gmux-vv-height,100vh) - var(--gmux-footer-h,52px));',
+  ' height:var(--gmux-footer-h,52px);display:flex;pointer-events:auto;',
   ' background:var(--vscode-statusBar-background,var(--vscode-sideBar-background,#252526));',
   ' border-top:1px solid var(--vscode-statusBar-border,rgba(128,128,128,.2));transition:transform .15s ease;}',
-  '.gdmux-toolbar button{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:19px;position:relative;',
+  '.gmux-toolbar .gmux-button{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:19px;position:relative;',
   ' color:var(--vscode-statusBar-foreground,var(--vscode-foreground,#cccccc));}',
-  '.gdmux-toolbar button .gdmux-btn-label{font-size:10px;opacity:.85;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.gdmux-toolbar button[aria-pressed="true"]{color:var(--vscode-button-background,#0e639c);}',
-  '.gdmux-toolbar button[aria-pressed="true"]::before{content:"";position:absolute;top:0;left:22%;right:22%;height:2px;background:currentColor;border-radius:0 0 2px 2px;}',
-  '.gdmux-toolbar button[aria-disabled="true"]{opacity:.38;cursor:not-allowed;}',
-  '#gdmux-root.gdmux-no-footer .gdmux-toolbar{display:none;}',
-  '#gdmux-root.gdmux-no-header .gdmux-header{display:none;}',
-  '#gdmux-root.gdmux-shell-minimized .gdmux-header{transform:translateY(-110%);}',
-  '#gdmux-root.gdmux-shell-minimized .gdmux-toolbar{transform:translateY(110%);}',
-  '@media (max-width:360px){.gdmux-toolbar button .gdmux-btn-label{display:none;}}',
+  '.gmux-toolbar .gmux-button .gmux-btn-label{font-size:10px;opacity:.85;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.gmux-toolbar .gmux-button[aria-pressed="true"]{color:var(--vscode-button-background,#0e639c);}',
+  '.gmux-toolbar .gmux-button[aria-pressed="true"]::before{content:"";position:absolute;top:0;left:22%;right:22%;height:2px;background:currentColor;border-radius:0 0 2px 2px;}',
+  '.gmux-toolbar .gmux-button[aria-disabled="true"]{opacity:.38;cursor:not-allowed;}',
+  `#${ROOT_ID}.gmux-no-footer .gmux-toolbar{display:none;}`,
+  `#${ROOT_ID}.gmux-no-header .gmux-header{display:none;}`,
+  `#${ROOT_ID}.gmux-shell-minimized .gmux-header{transform:translateY(-110%);}`,
+  `#${ROOT_ID}.gmux-shell-minimized .gmux-toolbar{transform:translateY(110%);}`,
+  '@media (max-width:360px){.gmux-toolbar .gmux-button .gmux-btn-label{display:none;}}',
 
-  '/* Adapter presentation rules (mobile overlays) — scoped under gdmux-* state classes */',
-  // Mobile invariant: the GMUX header replaces the desktop titlebar strip.
-  // visibility keeps VS Code grid metrics intact (no layout corruption).
-  '.monaco-workbench.gdmux-mode-mobile .part.titlebar{visibility:hidden;}',
-  // The desktop activity rail is replaced by the bottom toolbar on mobile;
-  // visibility keeps its 48px grid track so workbench layout stays stable.
-  '.monaco-workbench.gdmux-mode-mobile .part.activitybar{visibility:hidden;}',
-  // Immersive: minimap hidden. Safe — the vacated strip shows editor
-  // background; Monaco text viewport was already sized beside it (spec §21).
-  '.monaco-workbench.gdmux-immersive .monaco-editor .minimap{display:none !important;}',
-  // Explorer/Search/SCM as drawer: reposition the EXISTING sidebar part
-  // (spec §17 — no duplicated file tree, no second repository model).
-  '.monaco-workbench.gdmux-sidebar-overlay .part.sidebar{position:fixed !important;left:0 !important;right:auto !important;',
-  ' top:calc(var(--gdmux-vv-offset,0px) + var(--gdmux-shell-top,0px)) !important;',
-  ' height:calc(var(--gdmux-vv-height,100vh) - var(--gdmux-shell-top,0px) - var(--gdmux-shell-bottom,0px)) !important;',
+  '/* Host presentation overrides — only under gmux-* state classes (§42) */',
+  // visibility (not display:none) preserves the workbench grid tracks so the
+  // VS Code layout is never corrupted; only visibility/presentation changes.
+  '.monaco-workbench.gmux-mode-mobile .part.titlebar{visibility:hidden;}',
+  '.monaco-workbench.gmux-mode-mobile .part.activitybar{visibility:hidden;}',
+  // Immersive editor (§29): minimap + redundant breadcrumbs out of the way.
+  '.monaco-workbench.gmux-immersive .monaco-editor .minimap{display:none !important;}',
+  '.monaco-workbench.gmux-immersive .monaco-breadcrumbs{display:none !important;}',
+  // Drawer: reposition the EXISTING sidebar part (§31) — never a second tree.
+  '.monaco-workbench.gmux-sidebar-overlay .part.sidebar{position:fixed !important;left:0 !important;right:auto !important;',
+  ' top:calc(var(--gmux-vv-offset,0px) + var(--gmux-shell-top,0px)) !important;',
+  ' height:calc(var(--gmux-vv-height,100vh) - var(--gmux-shell-top,0px) - var(--gmux-shell-bottom,0px)) !important;',
   ' width:min(100vw,480px) !important;z-index:920;',
   ' background:var(--vscode-sideBar-background,#252526);box-shadow:0 0 24px rgba(0,0,0,.45);}',
-  // Terminal full usable height (spec §20).
-  '.monaco-workbench.gdmux-panel-overlay .part.panel{position:fixed !important;left:0 !important;right:0 !important;bottom:auto !important;',
-  ' top:calc(var(--gdmux-vv-offset,0px) + var(--gdmux-shell-top,0px)) !important;',
-  ' height:var(--gdmux-panel-h,60vh) !important;width:auto !important;z-index:920;',
+  // Panel overlay (only reachable if a terminal is ever enabled — §17).
+  '.monaco-workbench.gmux-panel-overlay .part.panel{position:fixed !important;left:0 !important;right:0 !important;bottom:auto !important;',
+  ' top:calc(var(--gmux-vv-offset,0px) + var(--gmux-shell-top,0px)) !important;',
+  ' height:var(--gmux-panel-h,60vh) !important;width:auto !important;z-index:920;',
   ' background:var(--vscode-panel-background,#1e1e1e);box-shadow:0 0 24px rgba(0,0,0,.45);}',
 
-  '/* Modal & menus */',
-  '.gdmux-modal-backdrop{position:absolute;inset:0;pointer-events:auto;background:rgba(0,0,0,.35);display:flex;align-items:flex-end;justify-content:center;}',
-  '@media (min-width:600px){.gdmux-modal-backdrop{align-items:center;}}',
-  '.gdmux-modal{background:var(--vscode-editorWidget-background,var(--vscode-sideBar-background,#252526));',
+  '/* Surfaces: menus / settings / diagnostics (modal class) */',
+  '.gmux-surface-backdrop{position:absolute;inset:0;pointer-events:auto;background:rgba(0,0,0,.35);display:flex;align-items:flex-end;justify-content:center;}',
+  '@media (min-width:600px){.gmux-surface-backdrop{align-items:center;}}',
+  '.gmux-surface{background:var(--vscode-editorWidget-background,var(--vscode-sideBar-background,#252526));',
   ' color:var(--vscode-editorWidget-foreground,inherit);border:1px solid var(--vscode-editorWidget-border,rgba(128,128,128,.3));',
   ' border-radius:10px 10px 0 0;width:100%;max-width:520px;max-height:80vh;display:flex;flex-direction:column;',
   ' box-shadow:0 -4px 24px rgba(0,0,0,.35);}',
-  '@media (min-width:600px){.gdmux-modal{border-radius:10px;}}',
-  '.gdmux-modal-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(128,128,128,.2);font-weight:600;}',
-  '.gdmux-modal-head button{width:34px;height:30px;border-radius:6px;font-size:16px;}',
-  '.gdmux-modal-head button:hover{background:rgba(128,128,128,.18);}',
-  '.gdmux-modal-body{padding:8px 12px 14px;overflow:auto;-webkit-overflow-scrolling:touch;}',
-  '.gdmux-menu{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;}',
-  '.gdmux-menu button{display:flex;width:100%;text-align:left;padding:11px 10px;border-radius:6px;font-size:15px;align-items:center;gap:10px;}',
-  '.gdmux-menu button:hover{background:var(--vscode-list-hoverBackground,rgba(128,128,128,.15));}',
-  '.gdmux-menu button[aria-disabled="true"]{opacity:.45;cursor:not-allowed;}',
-  '.gdmux-menu .gdmux-note{margin-left:auto;font-size:11px;opacity:.7;}',
-  '.gdmux-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 2px;border-bottom:1px solid rgba(128,128,128,.15);font-size:14px;}',
-  '.gdmux-row input[type=checkbox]{width:20px;height:20px;}',
-  '.gdmux-row select{background:var(--vscode-dropdown-background,#3c3c3c);color:var(--vscode-dropdown-foreground,#fff);border:1px solid var(--vscode-dropdown-border,transparent);padding:4px 6px;border-radius:4px;}',
-  '.gdmux-report{font:11px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;background:rgba(128,128,128,.08);padding:8px;border-radius:6px;}',
-  '.gdmux-actions-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}',
-  '.gdmux-actions-row button{background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#fff);padding:7px 12px;border-radius:5px;font-size:13px;}',
-  '.gdmux-revive{position:fixed;right:10px;bottom:10px;z-index:940;width:34px;height:34px;border-radius:50%;',
+  '@media (min-width:600px){.gmux-surface{border-radius:10px;}}',
+  '.gmux-surface-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(128,128,128,.2);font-weight:600;}',
+  '.gmux-surface-head .gmux-button{width:34px;height:30px;border-radius:6px;font-size:16px;}',
+  '.gmux-surface-head .gmux-button:hover{background:rgba(128,128,128,.18);}',
+  '.gmux-surface-body{padding:8px 12px 14px;overflow:auto;-webkit-overflow-scrolling:touch;}',
+  '.gmux-menu{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;}',
+  '.gmux-menu .gmux-button{display:flex;width:100%;text-align:left;padding:11px 10px;border-radius:6px;font-size:15px;align-items:center;gap:10px;}',
+  '.gmux-menu .gmux-button:hover{background:var(--vscode-list-hoverBackground,rgba(128,128,128,.15));}',
+  '.gmux-menu .gmux-button[aria-disabled="true"]{opacity:.45;cursor:not-allowed;}',
+  '.gmux-menu .gmux-note{margin-left:auto;font-size:11px;opacity:.7;}',
+  '.gmux-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 2px;border-bottom:1px solid rgba(128,128,128,.15);font-size:14px;}',
+  '.gmux-row input[type=checkbox]{width:20px;height:20px;}',
+  '.gmux-row select{background:var(--vscode-dropdown-background,#3c3c3c);color:var(--vscode-dropdown-foreground,#fff);border:1px solid var(--vscode-dropdown-border,transparent);padding:4px 6px;border-radius:4px;}',
+  '.gmux-report{font:11px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;background:rgba(128,128,128,.08);padding:8px;border-radius:6px;}',
+  '.gmux-actions-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}',
+  '.gmux-actions-row .gmux-button{background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#fff);padding:7px 12px;border-radius:5px;font-size:13px;}',
+  '.gmux-revive{position:fixed;right:10px;bottom:10px;z-index:940;width:34px;height:34px;border-radius:50%;',
   ' background:var(--vscode-button-background,#0e639c);color:#fff;display:flex;align-items:center;justify-content:center;',
   ' font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:auto;border:0;cursor:pointer;}',
 ].join('\n');
 
 /* ===========================================================================
- * §F–§J RUNTIME (browser only): shell, viewport, inputs, reconciler,
- * lifecycle, bootstrap. Everything below is guarded by HAS_DOM so the file
- * can also be loaded by Node for the unit test suite.
+ * §F–§J RUNTIME SESSION (browser only)
  * =========================================================================*/
 
-let session = null; // active runtime session (idempotency, spec §32)
+let session = null; // exactly one session (§6/§21 idempotency)
 
 function createSession() {
   const diag = createDiagLog();
@@ -898,37 +1072,42 @@ function createSession() {
   const commands = createCommandRegistry(diag);
   const adapter = GitHubDevAdapter;
 
-  // ----- kernel state (spec §12) — DOM is evidence, this is control state --
+  /* ----- minimum serializable kernel state (§16) ------------------------- */
   const state = {
     lifecycle: LIFECYCLE.BOOTSTRAPPING,
-    shellMode: null,
+    shellMode: SHELL_MODE.MOBILE,
     activeSurface: SURFACE.EDITOR,
     previousSurface: null,
     immersive: true,
     keyboardVisible: false,
-    keyboardEvidence: 'UNKNOWN',
     viewport: { width: 0, height: 0, offsetTop: 0 },
-    lastFileKey: '',
+    capabilities: {},
+    diagnostics: { reconciliationCount: 0, warnings: [] },
+    // runtime-only handles are kept OUTSIDE state (pending, modal kind).
     modal: null,
+    lastFileKey: '',
   };
+
   let caps = {};
   const stats = {
-    viewportApplied: false, immersiveApplied: false,
-    explorerValidated: false, searchValidated: false, gitValidated: false, terminalValidated: false,
-    reconciles: 0,
+    shellMounted: false, observerActive: false, viewportApplied: false,
+    immersiveApplied: false, backHandled: false,
+    explorerValidated: false, searchValidated: false, sourceControlValidated: false, terminalValidated: false,
   };
   let vvUsed = false;
-  let pending = null; // {cmd, expect, t0, retried}
-  let suppress = 0;   // MutationObserver self-write guard (spec §11)
+  let pending = null;                 // {cmd, expect, t0, retried}
+  let suppress = 0;                  // self-write MutationObserver mask
   let disposed = false;
 
-  const listeners = []; // [target, type, fn, opts] — removable on teardown
-  let mo = null;        // app MutationObserver
-  let bootObserver = null;
-  let bootTimer = null;
+  const listeners = [];
+  let mo = null, bootObserver = null, bootTimer = null;
   let shell = null;
-  let reviveEl = null;
   const lastVars = {};
+
+  // Android Back history layering (§34).
+  let historyStack = [];   // owned history entries, bottom→top
+  let internalPops = 0;    // pops initiated by our own reconciliation
+  let dismissingQuickInput = false;
 
   function on(target, type, fn, opts) {
     target.addEventListener(type, fn, opts);
@@ -938,55 +1117,60 @@ function createSession() {
   function applyWrites(fn) {
     suppress++;
     try { fn(); } finally {
-      // MutationObserver callbacks run as microtasks queued before this
-      // timeout, so our own mutations are still masked when they fire.
+      // Observer callbacks flush as microtasks before this timeout.
       setTimeout(() => { suppress = Math.max(0, suppress - 1); }, 0);
     }
   }
 
-  /* ----------------------------- shell UI (§16) --------------------------- */
+  // Every userscript-created element is ownership-marked (§20, I-13).
+  function own(el) {
+    if (el && el.setAttribute) el.setAttribute(OWNER_ATTR, OWNER_VALUE);
+    return el;
+  }
+  function el(tag, className) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    return own(node);
+  }
+
+  /* ============================ §F SHELL UI ============================== */
 
   const SURFACE_BUTTONS = [
-    { surface: SURFACE.EXPLORER, icon: '\u{1F4C1}', label: 'Files', command: 'open-explorer' },
-    { surface: SURFACE.SEARCH, icon: '\u{1F50D}', label: 'Search', command: 'open-search' },
-    { surface: SURFACE.GIT, icon: '\u2387', label: 'Git', command: 'open-git' },
-    { surface: SURFACE.TERMINAL, icon: '\u25A3', label: 'Term.', command: 'open-terminal' },
-    { surface: SURFACE.SETTINGS, icon: '\u2699', label: 'More', command: 'open-settings' },
+    { surface: SURFACE.EXPLORER, icon: '\u{1F4C1}', label: 'Files' },
+    { surface: SURFACE.SEARCH, icon: '\u{1F50D}', label: 'Search' },
+    { surface: SURFACE.SOURCE_CONTROL, icon: '\u2387', label: 'Git' },
+    { surface: SURFACE.TERMINAL, icon: '\u25A3', label: 'Term.' },
+    { surface: SURFACE.SETTINGS, icon: '\u2699', label: 'More' },
   ];
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
-    const el = document.createElement('style');
-    el.id = STYLE_ID;
-    el.textContent = CSS_TEXT;
-    (document.head || document.documentElement).appendChild(el);
+    const style = el('style');
+    style.id = STYLE_ID;
+    style.textContent = CSS_TEXT;
+    (document.head || document.documentElement).appendChild(style);
   }
 
   function buildShell() {
-    const root = document.createElement('div');
-    root.id = 'gdmux-root';
-    root.setAttribute('data-gdmux', '');
+    const root = el('div', 'gmux-shell');
+    root.id = ROOT_ID;
+    root.setAttribute('role', 'region');
+    root.setAttribute('aria-label', 'GitHub.dev mobile controls');
 
-    const header = document.createElement('header');
-    header.className = 'gdmux-header';
+    const header = el('header', 'gmux-header');
     header.setAttribute('role', 'banner');
 
-    const menuBtn = document.createElement('button');
-    menuBtn.className = 'gdmux-icon-btn gdmux-header-menu';
+    const menuBtn = el('button', 'gmux-button gmux-icon-button gmux-header-menu');
     menuBtn.textContent = '\u2630';
     menuBtn.setAttribute('aria-label', 'GMUX menu');
     menuBtn.setAttribute('aria-haspopup', 'true');
 
-    const fileBtn = document.createElement('button');
-    fileBtn.className = 'gdmux-header-file';
-    fileBtn.setAttribute('aria-label', 'Current file — activate to focus editor');
-    const fileName = document.createElement('span');
-    fileName.className = 'gdmux-file-name';
-    fileName.textContent = '';
+    const fileBtn = el('button', 'gmux-button gmux-header-file');
+    fileBtn.setAttribute('aria-label', 'Current file — activate to focus the editor');
+    const fileName = el('span', 'gmux-file-name');
     fileBtn.appendChild(fileName);
 
-    const moreBtn = document.createElement('button');
-    moreBtn.className = 'gdmux-icon-btn gdmux-header-more';
+    const moreBtn = el('button', 'gmux-button gmux-icon-button gmux-header-more');
     moreBtn.textContent = '\u22EE';
     moreBtn.setAttribute('aria-label', 'Editor actions');
     moreBtn.setAttribute('aria-haspopup', 'true');
@@ -995,23 +1179,21 @@ function createSession() {
     header.appendChild(fileBtn);
     header.appendChild(moreBtn);
 
-    const toolbar = document.createElement('nav');
-    toolbar.className = 'gdmux-toolbar';
+    // Bottom command bar — a COMMAND surface dispatching intent only (§22).
+    const toolbar = el('nav', 'gmux-toolbar');
     toolbar.setAttribute('role', 'toolbar');
-    toolbar.setAttribute('aria-label', 'Workspace surfaces');
+    toolbar.setAttribute('aria-label', 'Mobile command bar');
     const buttons = {};
     SURFACE_BUTTONS.forEach((def) => {
-      const b = document.createElement('button');
+      const b = el('button', 'gmux-button');
       b.setAttribute('data-surface', def.surface);
-      b.setAttribute('aria-label',
-        def.surface === SURFACE.TERMINAL ? 'Terminal' :
-        def.surface === SURFACE.SETTINGS ? 'Settings and more' : def.label);
+      b.setAttribute('aria-label', def.surface === SURFACE.TERMINAL ? 'Terminal (unavailable on this host)'
+        : def.surface === SURFACE.SETTINGS ? 'Settings and diagnostics' : def.label);
       b.setAttribute('aria-pressed', 'false');
-      const ic = document.createElement('span');
+      const ic = el('span');
       ic.setAttribute('aria-hidden', 'true');
       ic.textContent = def.icon;
-      const lb = document.createElement('span');
-      lb.className = 'gdmux-btn-label';
+      const lb = el('span', 'gmux-btn-label');
       lb.setAttribute('aria-hidden', 'true');
       lb.textContent = def.label;
       b.appendChild(ic);
@@ -1020,86 +1202,79 @@ function createSession() {
       buttons[def.surface] = b;
     });
 
-    const live = document.createElement('div');
-    live.className = 'gdmux-visually-hidden';
+    const live = el('div', 'gmux-visually-hidden');
     live.setAttribute('aria-live', 'polite');
-
-    const modalRoot = document.createElement('div');
-    modalRoot.className = 'gdmux-modal-root';
+    const surfaceRoot = el('div', 'gmux-surface-root');
 
     root.appendChild(header);
     root.appendChild(toolbar);
     root.appendChild(live);
-    root.appendChild(modalRoot);
+    root.appendChild(surfaceRoot);
 
-    // Event wiring — everything converges on the command registry (spec §15).
-    menuBtn.addEventListener('click', () => commands.execute('open-menu'));
-    moreBtn.addEventListener('click', () => commands.execute('open-editor-menu'));
-    fileBtn.addEventListener('click', () => commands.execute('focus-editor'));
+    // Inputs dispatch INTENT; no GitHub DOM logic exists in the shell (§22).
+    menuBtn.addEventListener('click', () => dispatch({ type: 'OPEN_MENU' }));
+    moreBtn.addEventListener('click', () => dispatch({ type: 'OPEN_EDITOR_MENU' }));
+    fileBtn.addEventListener('click', () => dispatch({ type: 'FOCUS_EDITOR' }));
     toolbar.addEventListener('click', (ev) => {
       const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-surface]') : null;
       if (!btn) return;
-      const def = SURFACE_BUTTONS.find((d) => d.surface === btn.getAttribute('data-surface'));
-      if (!def) return;
+      const surface = btn.getAttribute('data-surface');
       if (btn.getAttribute('aria-disabled') === 'true') {
-        diag.log(FAIL.TERMINAL_NOT_FOUND, 'terminal surface not available on this host (spec §20)', 'warn');
-        announce('Terminal not available here');
+        if (surface === SURFACE.TERMINAL) {
+          diag.log(FAIL.TERMINAL_NOT_DETECTED, 'terminal not advertised on this host (§17/§46)', 'warn');
+          announce('Terminal is not available on github.dev');
+        }
         return;
       }
-      commands.execute(def.command);
+      dispatch({ type: 'OPEN_SURFACE', surface });
     });
 
     return {
-      root, header, toolbar, fileName, buttons, live, modalRoot,
-      mount() {
-        applyWrites(() => { document.body.appendChild(root); });
-      },
-      unmount() {
-        if (root.parentNode) applyWrites(() => { root.parentNode.removeChild(root); });
-      },
+      root, header, toolbar, fileName, buttons, live, surfaceRoot,
+      mount() { applyWrites(() => { document.body.appendChild(root); }); },
+      unmount() { if (root.parentNode) applyWrites(() => { root.parentNode.removeChild(root); }); },
     };
   }
 
-  function announce(msg) {
-    if (shell && shell.live) shell.live.textContent = msg;
+  function announce(msg) { if (shell && shell.live) shell.live.textContent = msg; }
+
+  /* ------------------------------ surfaces ------------------------------- */
+
+  let activeModal = null;
+  function closeModal() {
+    if (activeModal) { activeModal.close(); activeModal = null; }
   }
 
-  /* ------------------------------- modals --------------------------------- */
-
-  function openModal(title, bodyEl, opts = {}) {
+  function openSurfaceModal(title, bodyEl, kind) {
     closeModal();
-    const backdrop = document.createElement('div');
-    backdrop.className = 'gdmux-modal-backdrop';
-    const modal = document.createElement('div');
-    modal.className = 'gdmux-modal';
+    const backdrop = el('div', 'gmux-surface-backdrop');
+    const modal = el('div', 'gmux-surface');
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-label', title);
-    const head = document.createElement('div');
-    head.className = 'gdmux-modal-head';
-    const h = document.createElement('span');
+    const head = el('div', 'gmux-surface-head');
+    const h = el('span');
     h.textContent = title;
-    const x = document.createElement('button');
+    const x = el('button', 'gmux-button');
     x.textContent = '\u2715';
     x.setAttribute('aria-label', 'Close dialog');
-    x.addEventListener('click', () => closeModal());
+    x.addEventListener('click', () => requestBackOrClose());
     head.appendChild(h);
     head.appendChild(x);
-    const body = document.createElement('div');
-    body.className = 'gdmux-modal-body';
+    const body = el('div', 'gmux-surface-body');
     body.appendChild(bodyEl);
     modal.appendChild(head);
     modal.appendChild(body);
     backdrop.appendChild(modal);
-    backdrop.addEventListener('click', (ev) => { if (ev.target === backdrop) closeModal(); });
+    backdrop.addEventListener('click', (ev) => { if (ev.target === backdrop) requestBackOrClose(); });
     const prevFocus = document.activeElement;
-    applyWrites(() => { shell.modalRoot.appendChild(backdrop); });
-    state.modal = opts.kind || 'modal';
+    applyWrites(() => { shell.surfaceRoot.appendChild(backdrop); });
+    state.modal = kind || 'modal';
     scheduler.markDirty('modal');
     const focusable = modal.querySelector('button, [href], input, select, textarea');
     if (focusable) { try { focusable.focus(); } catch (e) { /* noop */ } }
-    announce(title + ' opened');
-    return {
+    announce(`${title} opened`);
+    activeModal = {
       close() {
         if (backdrop.parentNode) applyWrites(() => { backdrop.parentNode.removeChild(backdrop); });
         state.modal = null;
@@ -1107,267 +1282,299 @@ function createSession() {
         if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) { /* noop */ } }
       },
     };
+    return activeModal;
   }
 
-  let activeModal = null;
-  function closeModal() {
-    if (activeModal) { activeModal.close(); activeModal = null; }
+  // Android Back is the canonical close path (§34); when a history entry exists
+  // we pop it and popstate performs the close, keeping the stack truthful.
+  function requestBackOrClose() {
+    if (historyStack.length && FEATURES.androidBack) {
+      try { window.history.back(); return; } catch (e) { /* fall through */ }
+    }
+    closeModal();
   }
-  function showModal(title, bodyEl, opts) { activeModal = openModal(title, bodyEl, opts); return activeModal; }
 
   function menuList(items) {
-    const ul = document.createElement('ul');
-    ul.className = 'gdmux-menu';
+    const ul = el('ul', 'gmux-menu');
     items.forEach((item) => {
-      const li = document.createElement('li');
-      const b = document.createElement('button');
+      const li = el('li');
+      const b = el('button', 'gmux-button');
       b.textContent = item.label;
       if (item.note) {
-        const n = document.createElement('span');
-        n.className = 'gdmux-note';
+        const n = el('span', 'gmux-note');
         n.textContent = item.note;
         b.appendChild(n);
       }
-      if (item.disabled) {
-        b.setAttribute('aria-disabled', 'true');
-      } else {
-        b.addEventListener('click', () => {
-          if (!item.keepOpen) closeModal();
-          if (item.run) item.run();
-        });
-      }
+      if (item.disabled) b.setAttribute('aria-disabled', 'true');
+      else b.addEventListener('click', () => { if (!item.keepOpen) closeModal(); if (item.run) item.run(); });
       li.appendChild(b);
       ul.appendChild(li);
     });
     return ul;
   }
 
-  /* --------------------------- diagnostics (§44) -------------------------- */
+  /* ---------------------------- diagnostics (§37) ------------------------ */
 
   function buildReport() {
     const p = prefsStore.get();
-    const lines = [];
-    lines.push(`${NAME} v${USER_INTERFACE_VERSION} (adapter ${adapter ? adapter.version : 'none'})`);
-    lines.push(`Mode: ${String(state.shellMode).toUpperCase()}   Lifecycle: ${state.lifecycle}`);
-    lines.push(`Adapter: ${adapter ? adapter.name : 'none'}   Adapter status: ${adapter && adapter.isPresent() ? 'ACTIVE' : 'NOT_FOUND'}`);
-    lines.push('');
-    lines.push(`Editor: ${caps.editor || CAP.UNKNOWN}`);
-    lines.push(`Explorer: ${caps.explorer || CAP.UNKNOWN}`);
-    lines.push(`Search: ${caps.search || CAP.UNKNOWN}`);
-    lines.push(`Git: ${caps.sourceControl || CAP.UNKNOWN}`);
-    lines.push(`Terminal: ${caps.terminal || CAP.UNKNOWN}${caps.terminal === CAP.UNSUPPORTED ? ' (host does not provide a terminal — inference)' : ''}`);
-    lines.push('');
-    lines.push(`Viewport: ${state.viewport.width} \u00D7 ${state.viewport.height}${vvUsed ? '' : ' (visualViewport unavailable)'}`);
-    lines.push(`Keyboard: ${state.keyboardVisible ? 'INFERRED_OPEN' : 'INFERRED_CLOSED'} (evidence: ${state.keyboardEvidence})`);
-    lines.push('');
-    lines.push(`Shell: ${state.lifecycle}   Immersive: ${p.immersive ? 'ON' : 'OFF'}   Gestures: ${p.gestures ? 'ON' : 'OFF'}`);
-    lines.push(`Active surface: ${state.activeSurface}${state.previousSurface ? `   Previous: ${state.previousSurface}` : ''}`);
-    lines.push(`Reconciliations: ${stats.reconciles}`);
-    lines.push('');
-    lines.push('Features (spec §35 — evidence-based):');
-    computeFeatureStatuses({ caps, stats, vvUsed: vvUsed ? (window.visualViewport ? 'visualViewport' : 'fallback') : null, terminalNote: caps.terminal === CAP.UNSUPPORTED ? 'github.dev/vscode.dev host' : null })
-      .forEach(([name, info]) => lines.push(`  ${name}: ${info.status} — ${info.basis}`));
-    const recent = diag.entries().slice(-12);
-    if (recent.length) {
-      lines.push('');
-      lines.push('Recent diagnostics:');
-      recent.forEach((e) => lines.push(`  [${new Date(e.ts).toISOString()}] ${e.level.toUpperCase()} ${e.code ? e.code + ': ' : ''}${e.msg}`));
+    const L = [];
+    L.push(NAME);
+    L.push(`Version: ${USER_INTERFACE_VERSION}`);
+    L.push(`Adapter: ${adapter ? adapter.id : 'none'}`);
+    L.push(`Mode: ${String(state.shellMode || 'unknown').toUpperCase()}`);
+    L.push(`Viewport: ${state.viewport.width} \u00D7 ${state.viewport.height}`);
+    L.push('');
+    L.push(`Editor: ${caps.editor || CAP.UNKNOWN}`);
+    L.push(`Explorer: ${caps.explorer || CAP.UNKNOWN}`);
+    L.push(`Search: ${caps.search || CAP.UNKNOWN}`);
+    L.push(`Source Control: ${caps.sourceControl || CAP.UNKNOWN}`);
+    L.push(`Terminal: ${caps.terminal || CAP.UNKNOWN}`);
+    L.push(`Activity bar: ${caps.activityBar || CAP.UNKNOWN}`);
+    L.push(`Status bar: ${caps.statusBar || CAP.UNKNOWN}`);
+    L.push(`Command palette: ${caps.commandPalette || CAP.UNKNOWN}`);
+    L.push('');
+    L.push(`Shell: ${stats.shellMounted ? 'ACTIVE' : state.lifecycle}`);
+    L.push(`Observer: ${stats.observerActive ? 'ACTIVE' : 'INACTIVE'}`);
+    L.push(`Reconciliations: ${state.diagnostics.reconciliationCount}`);
+    L.push(`Keyboard: ${state.keyboardVisible ? 'INFERRED_OPEN' : 'INFERRED_CLOSED'}`);
+    L.push(`Immersive: ${p.immersive ? 'ON' : 'OFF'}   Bottom bar: ${p.bottomBar ? 'ON' : 'OFF'}`);
+    L.push(`Active surface: ${state.activeSurface}${state.previousSurface ? ` (previous: ${state.previousSurface})` : ''}`);
+    L.push('');
+    const warnings = diag.warnings();
+    L.push(`Warnings: ${warnings.length ? '' : '(none)'}`);
+    warnings.forEach((w) => L.push(`- ${w.code ? w.code + ': ' : ''}${w.msg}`));
+    if (!warnings.length && caps.terminal !== CAP.DETECTED) {
+      L.push('- terminal capability unavailable');
     }
-    return lines.join('\n');
+    L.push('');
+    L.push('Feature status (evidence-based, §38):');
+    computeFeatureStatuses({ caps, stats, vvUsed: vvUsed ? (window.visualViewport ? 'visualViewport' : 'fallback') : null })
+      .forEach(([name, info]) => L.push(`  ${name}: ${info.status} — ${info.basis}`));
+    const recent = diag.entries().slice(-10);
+    if (recent.length) {
+      L.push('');
+      L.push('Recent events:');
+      recent.forEach((e) => L.push(`  [${new Date(e.ts).toISOString()}] ${e.level.toUpperCase()} ${e.code ? e.code + ': ' : ''}${e.msg}`));
+    }
+    return L.join('\n');
   }
 
   function openDiagnostics() {
-    const wrap = document.createElement('div');
-    const pre = document.createElement('div');
-    pre.className = 'gdmux-report';
+    const wrap = el('div');
+    const pre = el('div', 'gmux-report');
     pre.setAttribute('role', 'log');
     pre.textContent = buildReport();
     wrap.appendChild(pre);
-    const row = document.createElement('div');
-    row.className = 'gdmux-actions-row';
+    const row = el('div', 'gmux-actions-row');
     const mk = (label, fn) => {
-      const b = document.createElement('button');
+      const b = el('button', 'gmux-button');
       b.textContent = label;
       b.addEventListener('click', fn);
       row.appendChild(b);
     };
-    mk('Refresh', () => { scheduler.markDirty('diagnostics-refresh'); pre.textContent = buildReport(); });
+    mk('Refresh', () => { scheduler.markDirty('diagnostics'); pre.textContent = buildReport(); });
     mk('Copy report', () => {
       const text = buildReport();
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(() => announce('Report copied'), () => announce('Copy failed'));
-      } else { announce('Clipboard unavailable'); }
+      } else announce('Clipboard unavailable');
     });
-    mk('Reset preferences', () => { prefsStore.reset(); diag.log(null, 'preferences reset to defaults'); scheduler.markDirty('prefs'); pre.textContent = buildReport(); });
-    mk('Disable GMUX', () => { closeModal(); commands.execute('disable-gmux'); });
+    mk('Reset preferences', () => { prefsStore.reset(); scheduler.markDirty('prefs'); pre.textContent = buildReport(); });
+    mk('Disable GMUX', () => { closeModal(); dispatch({ type: 'DISABLE' }); });
     wrap.appendChild(row);
-    showModal(`${NAME} — diagnostics`, wrap, { kind: 'diagnostics' });
+    openSurfaceModal(`${NAME} — diagnostics`, wrap, 'diagnostics');
   }
 
-  /* ----------------------------- settings (§28) --------------------------- */
+  /* ----------------------------- preferences UI -------------------------- */
 
   function openSettings() {
     const p = prefsStore.get();
-    const wrap = document.createElement('div');
+    const wrap = el('div');
     const row = (labelText, control) => {
-      const r = document.createElement('div');
-      r.className = 'gdmux-row';
-      const l = document.createElement('label');
+      const r = el('div', 'gmux-row');
+      const l = el('label');
       l.textContent = labelText;
       r.appendChild(l);
       r.appendChild(control);
       wrap.appendChild(r);
       return r;
     };
-    const checkbox = (value, apply) => {
-      const c = document.createElement('input');
+    const checkbox = (value, key) => {
+      const c = el('input');
       c.type = 'checkbox';
       c.checked = !!value;
-      c.addEventListener('change', () => { apply(c.checked); scheduler.markDirty('prefs'); });
+      c.addEventListener('change', () => { dispatch({ type: 'TOGGLE_PREF', key, value: c.checked }); });
       return c;
     };
-    row('Immersive editor (hide minimap on mobile)', checkbox(p.immersive, (v) => prefsStore.set({ immersive: v })));
-    row('Bottom toolbar', checkbox(p.bottomBar, (v) => prefsStore.set({ bottomBar: v })));
-    row('Edge-swipe gestures', checkbox(p.gestures, (v) => prefsStore.set({ gestures: v })));
-    row('Terminal fullscreen', checkbox(p.terminalFullscreen, (v) => prefsStore.set({ terminalFullscreen: v })));
-    const sel = document.createElement('select');
+    row('Immersive editor (hide minimap on mobile)', checkbox(p.immersive, 'immersive'));
+    row('Bottom command bar', checkbox(p.bottomBar, 'bottomBar'));
+    const sel = el('select');
     sel.setAttribute('aria-label', 'Shell mode');
     ['auto', 'mobile', 'compact', 'desktop'].forEach((m) => {
-      const o = document.createElement('option');
+      const o = el('option');
       o.value = m;
       o.textContent = m === 'auto' ? 'Auto (follow viewport)' : m;
       if (p.mode === m) o.selected = true;
       sel.appendChild(o);
     });
-    sel.addEventListener('change', () => { prefsStore.set({ mode: sel.value }); scheduler.markDirty('prefs'); });
+    sel.addEventListener('change', () => dispatch({ type: 'TOGGLE_PREF', key: 'mode', value: sel.value }));
     row('Shell mode', sel);
-    const note = document.createElement('div');
-    note.className = 'gdmux-report';
+    const note = el('div', 'gmux-report');
     note.style.marginTop = '10px';
-    note.textContent = `${NAME} v${USER_INTERFACE_VERSION}\nadapter ${adapter ? adapter.version : '-'} · prefs schema v${PREFERENCE_SCHEMA_VERSION}\nPreferences stay in this browser (localStorage). No telemetry, no network, no repository data (spec §29).`;
+    note.textContent = `${NAME} v${USER_INTERFACE_VERSION}\nadapter ${adapter ? adapter.version : '-'} · preferences schema v${PREFERENCE_SCHEMA_VERSION}\n` +
+      'Preferences stay in this browser (localStorage). No telemetry, no network, no credentials, no repository data (§39/§48).';
     wrap.appendChild(note);
-    showModal('GMUX settings', wrap, { kind: 'settings' });
+    openSurfaceModal('GMUX settings', wrap, 'settings');
   }
 
-  /* --------------------------- command registry --------------------------- */
+  /* ===================== COMMAND PIPELINE (§22/§23) ====================== */
 
-  function expectTransition(actionName, expect) {
-    const t = transitionFor(state, actionName);
-    if (!t.ok) {
-      diag.log(t.code, t.reason, 'warn');
-      // Navigation commands are still allowed to proceed — the transition
-      // table lagging behind reality is diagnosable, not fatal.
+  function dispatch(action) {
+    if (!action || typeof action.type !== 'string') {
+      diag.log(FAIL.COMMAND_FAILED, `invalid intent: ${JSON.stringify(action || null)}`, 'error');
+      return { ok: false, code: FAIL.COMMAND_FAILED };
     }
+    switch (action.type) {
+      case 'OPEN_SURFACE': return openSurfaceIntent(action.surface);
+      case 'CLOSE_SURFACE': return commands.execute('close-surface');
+      case 'FOCUS_EDITOR': return commands.execute('focus-editor');
+      case 'OPEN_MENU': return openMenuCommand();
+      case 'OPEN_EDITOR_MENU': return openEditorMenuCommand();
+      case 'OPEN_SETTINGS': openSettings(); return { ok: true };
+      case 'OPEN_DIAGNOSTICS': openDiagnostics(); return { ok: true };
+      case 'TOGGLE_PREF': return commands.execute('set-preference', action);
+      case 'DISABLE': return commands.execute('disable-gmux');
+      default:
+        diag.log(FAIL.COMMAND_FAILED, `unknown intent: ${action.type}`, 'error');
+        return { ok: false, code: FAIL.COMMAND_FAILED };
+    }
+  }
+
+  function openSurfaceIntent(surface) {
+    if (surface === SURFACE.SETTINGS) { openSettings(); return { ok: true }; }
+    if (surface === SURFACE.TERMINAL) {
+      if (!FEATURES.terminalSurface) {
+        diag.log(FAIL.TERMINAL_NOT_DETECTED, 'terminal surface is disabled in v0.1 (feature flag, §17)', 'warn');
+        announce('Terminal is disabled in v0.1');
+        return { ok: false, code: FAIL.TERMINAL_NOT_DETECTED };
+      }
+      return commands.execute('open-terminal');
+    }
+    // Pressing the active surface again toggles it closed (through Back path).
+    if (state.modal) closeModal();
+    if (state.activeSurface === surface) return commands.execute('close-surface');
+    const id = surface === SURFACE.SOURCE_CONTROL ? 'open-source-control' : `open-${surface}`;
+    return commands.execute(id);
+  }
+
+  function beginPending(cmd, expect) {
     state.previousSurface = state.activeSurface;
     state.activeSurface = expect;
-    pending = { cmd: actionName, expect, t0: Date.now(), retried: false };
+    pending = { cmd, expect, t0: Date.now(), retried: false };
+  }
+
+  function recordOperation(r, failCode) {
+    if (r.ok) {
+      diag.log(null, `${r.operation}: ok (${r.evidence.level || 'OBSERVED'}${r.evidence.mechanism ? ', ' + r.evidence.mechanism : ''})`, 'info');
+    } else {
+      diag.log(r.reason || failCode, `${r.operation} failed: ${JSON.stringify(r.evidence)}`, 'warn');
+    }
   }
 
   commands.register('open-explorer', () => {
-    if (caps.explorer === CAP.NOT_DETECTED) diag.log(FAIL.EXPLORER_NOT_FOUND, 'explorer not detected yet; attempting anyway', 'warn');
-    const r = adapter.openSidebarView('explorer');
-    if (!r.ok) return { ok: false, code: FAIL.EXPLORER_NOT_FOUND };
-    expectTransition('openExplorer', SURFACE.EXPLORER);
+    if (caps.explorer === CAP.UNKNOWN) diag.log(FAIL.CAPABILITY_UNKNOWN, 'explorer capability UNKNOWN; attempting on evidence anyway', 'info');
+    const r = adapter.openExplorer();
+    recordOperation(r, FAIL.EXPLORER_NOT_DETECTED);
+    if (!r.ok) return { ok: false, code: r.reason || FAIL.EXPLORER_NOT_DETECTED, evidence: r.evidence };
+    beginPending('openExplorer', SURFACE.EXPLORER);
     scheduler.markDirty('command');
-    return { ok: true };
+    return { ok: true, operation: r.operation, evidence: r.evidence };
   });
   commands.register('open-search', () => {
-    const r = adapter.openSidebarView('search');
-    if (!r.ok) return { ok: false, code: FAIL.SEARCH_NOT_FOUND };
-    expectTransition('openSearch', SURFACE.SEARCH);
+    const r = adapter.openSearch();
+    recordOperation(r, FAIL.SEARCH_NOT_DETECTED);
+    if (!r.ok) return { ok: false, code: r.reason || FAIL.SEARCH_NOT_DETECTED, evidence: r.evidence };
+    beginPending('openSearch', SURFACE.SEARCH);
     scheduler.markDirty('command');
-    return { ok: true };
+    return { ok: true, operation: r.operation, evidence: r.evidence };
   });
-  commands.register('open-git', () => {
-    const r = adapter.openSidebarView('scm');
-    if (!r.ok) return { ok: false, code: FAIL.SOURCE_CONTROL_NOT_FOUND };
-    expectTransition('openGit', SURFACE.GIT);
+  commands.register('open-source-control', () => {
+    const r = adapter.openSourceControl();
+    recordOperation(r, FAIL.SOURCE_CONTROL_NOT_DETECTED);
+    if (!r.ok) return { ok: false, code: r.reason || FAIL.SOURCE_CONTROL_NOT_DETECTED, evidence: r.evidence };
+    beginPending('openSourceControl', SURFACE.SOURCE_CONTROL);
     scheduler.markDirty('command');
-    return { ok: true };
+    return { ok: true, operation: r.operation, evidence: r.evidence };
   });
   commands.register('open-terminal', () => {
     if (caps.terminal !== CAP.DETECTED) {
-      diag.log(FAIL.TERMINAL_NOT_FOUND, `terminal capability ${caps.terminal || CAP.UNKNOWN}; not advertising a working terminal (spec §20)`, 'warn');
-      announce('Terminal not available here');
-      return { ok: false, code: FAIL.TERMINAL_NOT_FOUND };
+      diag.log(FAIL.TERMINAL_NOT_DETECTED, `terminal ${caps.terminal || CAP.UNKNOWN}; not advertising it (§17/§46)`, 'warn');
+      return { ok: false, code: FAIL.TERMINAL_NOT_DETECTED };
     }
-    const r = adapter.openTerminal();
-    if (!r.ok) return { ok: false, code: FAIL.TERMINAL_NOT_FOUND };
-    expectTransition('openTerminal', SURFACE.TERMINAL);
+    const invoked = adapter.dispatchKeybinding('togglePanel');
+    if (!invoked) return { ok: false, code: FAIL.TERMINAL_NOT_DETECTED };
+    beginPending('openTerminal', SURFACE.TERMINAL);
     scheduler.markDirty('command');
     return { ok: true };
   });
   commands.register('focus-editor', () => {
     const r = adapter.focusEditor();
-    if (r.ok) {
-      state.previousSurface = state.activeSurface;
-      state.activeSurface = SURFACE.EDITOR;
-      scheduler.markDirty('command');
-      return { ok: true };
-    }
-    return { ok: false, code: FAIL.EDITOR_NOT_FOUND };
+    recordOperation(r, FAIL.EDITOR_NOT_DETECTED);
+    if (!r.ok) return { ok: false, code: r.reason || FAIL.EDITOR_NOT_DETECTED, evidence: r.evidence };
+    state.previousSurface = state.activeSurface;
+    state.activeSurface = SURFACE.EDITOR;
+    scheduler.markDirty('command');
+    return { ok: true, evidence: r.evidence };
   });
   commands.register('close-surface', () => {
-    const cur = state.activeSurface;
-    if (cur === SURFACE.EDITOR || cur === SURFACE.SETTINGS) {
-      diag.log(FAIL.UNEXPECTED_TRANSITION, `close-surface ignored on ${cur}`, 'info');
-      return { ok: false, code: FAIL.UNEXPECTED_TRANSITION };
+    if (state.activeSurface === SURFACE.EDITOR) {
+      diag.log(FAIL.COMMAND_FAILED, 'close-surface ignored on editor', 'info');
+      return { ok: false, code: FAIL.COMMAND_FAILED };
     }
     const t = transitionFor(state, 'close');
     const target = t.ok ? t.to : SURFACE.EDITOR;
-    if (cur === SURFACE.TERMINAL) adapter.closePanel();
-    else adapter.closeSidebar();
+    const r = adapter.closePanels();
+    recordOperation(r, FAIL.COMMAND_FAILED);
     state.previousSurface = null;
     state.activeSurface = target;
-    pending = { cmd: 'close', expect: target, t0: Date.now(), retried: false };
+    pending = { cmd: 'close', expect: SURFACE.EDITOR, t0: Date.now(), retried: false };
     scheduler.markDirty('command');
+    return { ok: true, evidence: r.evidence };
+  });
+  commands.register('set-preference', (action) => {
+    const allowed = ['mode', 'immersive', 'preferredSurface', 'bottomBar'];
+    if (!action || allowed.indexOf(action.key) === -1) {
+      return { ok: false, code: FAIL.COMMAND_FAILED };
+    }
+    prefsStore.set({ [action.key]: action.value });
+    scheduler.markDirty('prefs');
     return { ok: true };
   });
-  commands.register('open-settings', () => { openSettings(); return { ok: true }; });
-  commands.register('open-menu', () => {
-    showModal('GMUX', menuList([
-      { label: 'Settings', note: 'mobile UX', run: () => commands.execute('open-settings') },
-      { label: 'Diagnostics', note: 'status & evidence', run: openDiagnostics },
-      { label: 'Toggle immersive mode', note: prefsStore.get().immersive ? 'on' : 'off', run: () => commands.execute('toggle-immersive') },
-      { label: 'Toggle bottom toolbar', run: () => commands.execute('toggle-bottombar') },
-      { label: 'Toggle gestures', run: () => commands.execute('toggle-gestures') },
-      { label: 'Disable GMUX', note: 'Alt+Shift+G restores', run: () => commands.execute('disable-gmux') },
-    ]), { kind: 'menu' });
+  commands.register('disable-gmux', () => { disableShell(true); return { ok: true }; });
+
+  function openMenuCommand() {
+    const p = prefsStore.get();
+    openSurfaceModal('GMUX', menuList([
+      { label: 'Settings', note: 'mobile UX', run: () => dispatch({ type: 'OPEN_SETTINGS' }) },
+      { label: 'Diagnostics', note: 'status & evidence', run: () => openDiagnostics() },
+      { label: 'Toggle immersive mode', note: p.immersive ? 'on' : 'off', run: () => dispatch({ type: 'TOGGLE_PREF', key: 'immersive', value: !p.immersive }) },
+      { label: 'Toggle bottom command bar', note: p.bottomBar ? 'on' : 'off', run: () => dispatch({ type: 'TOGGLE_PREF', key: 'bottomBar', value: !p.bottomBar }) },
+      { label: 'Disable GMUX', note: 'Alt+Shift+G restores', run: () => dispatch({ type: 'DISABLE' }) },
+    ]), 'menu');
     return { ok: true };
-  });
-  commands.register('open-editor-menu', () => {
-    showModal('Editor actions', menuList([
+  }
+  function openEditorMenuCommand() {
+    openSurfaceModal('Editor actions', menuList([
       { label: 'Go to file\u2026', note: 'Ctrl+P', run: () => adapter.dispatchKeybinding('quickOpen') },
       { label: 'Command palette\u2026', note: 'Ctrl+Shift+P', run: () => adapter.dispatchKeybinding('commandPalette') },
       { label: 'VS Code settings', note: 'Ctrl+,', run: () => adapter.dispatchKeybinding('openSettings') },
-      { label: 'Focus editor', run: () => commands.execute('focus-editor') },
-      { label: 'Close current surface', run: () => commands.execute('close-surface') },
-    ]), { kind: 'menu' });
+      { label: 'Focus editor', run: () => dispatch({ type: 'FOCUS_EDITOR' }) },
+      { label: 'Close current surface', run: () => dispatch({ type: 'CLOSE_SURFACE' }) },
+    ]), 'editor-menu');
     return { ok: true };
-  });
-  commands.register('toggle-immersive', () => {
-    const v = !prefsStore.get().immersive;
-    prefsStore.set({ immersive: v });
-    scheduler.markDirty('prefs');
-    return { ok: true };
-  });
-  commands.register('toggle-bottombar', () => {
-    const v = !prefsStore.get().bottomBar;
-    prefsStore.set({ bottomBar: v });
-    scheduler.markDirty('prefs');
-    return { ok: true };
-  });
-  commands.register('toggle-gestures', () => {
-    const v = !prefsStore.get().gestures;
-    prefsStore.set({ gestures: v });
-    scheduler.markDirty('prefs');
-    return { ok: true };
-  });
-  commands.register('show-diagnostics', () => { openDiagnostics(); return { ok: true }; });
-  commands.register('reset-preferences', () => { prefsStore.reset(); scheduler.markDirty('prefs'); return { ok: true }; });
-  commands.register('disable-gmux', () => { disableShell(true); return { ok: true }; });
+  }
 
-  /* ------------------------- viewport subsystem (§24) ---------------------- */
+  /* ===================== §G VIEWPORT / KEYBOARD (§18/§29) ================ */
 
   function readViewport() {
     const vv = window.visualViewport;
@@ -1379,16 +1586,14 @@ function createSession() {
       vvUsed = 'visualViewport';
     } else if (vvUsed !== 'fallback') {
       vvUsed = 'fallback';
-      diag.log(FAIL.VIEWPORT_API_UNAVAILABLE, 'visualViewport missing; using window resize observations', 'warn');
+      diag.log(FAIL.VIEWPORT_UNAVAILABLE, 'visualViewport missing; window resize fallback used', 'warn');
     }
     state.viewport = { width: Math.round(width), height: Math.round(height), offsetTop: Math.round(offsetTop) };
-    // §25 keyboard inference — significant visual-viewport height reduction.
     const kb = inferKeyboard({
       vvAvailable: !!vv, vvHeight: height, vvWidth: width,
       layoutHeight: window.innerHeight, layoutWidth: window.innerWidth,
     });
     state.keyboardVisible = kb.visible;
-    state.keyboardEvidence = kb.evidence;
     scheduler.markDirty('viewport');
   }
 
@@ -1400,30 +1605,15 @@ function createSession() {
       if (!disposed) readViewport();
     });
   }
-
   function wireViewport() {
     const vv = window.visualViewport;
-    if (vv) {
-      on(vv, 'resize', onViewportEvent);
-      on(vv, 'scroll', onViewportEvent);
-    }
+    if (vv) { on(vv, 'resize', onViewportEvent); on(vv, 'scroll', onViewportEvent); }
     on(window, 'resize', onViewportEvent);
     on(window, 'orientationchange', onViewportEvent);
     readViewport();
   }
 
-  /* --------------------------- mutation observer (§11) --------------------- */
-
-  const RELEVANT_SELECTOR = '.part, .pane-composite-part, .monaco-editor, .xterm, .quick-input-widget, .tab';
-  function isRelevantNode(node) {
-    if (!node || node.nodeType !== 1) return false;
-    if (node.id === 'gdmux-root' || (node.classList && node.classList.contains('gdmux-revive'))) return false;
-    try {
-      if (node.matches && node.matches(RELEVANT_SELECTOR)) return true;
-      if (node.querySelector && node.querySelector(RELEVANT_SELECTOR)) return true;
-    } catch (e) { /* noop */ }
-    return false;
-  }
+  /* ==================== §J MUTATION OBSERVER (§26/§27) =================== */
 
   function wireObserver() {
     if (!('MutationObserver' in window)) {
@@ -1431,93 +1621,140 @@ function createSession() {
       return;
     }
     mo = new MutationObserver((mutations) => {
-      if (suppress > 0) return; // our own writes
+      if (suppress > 0) return; // mask our own writes
       let relevant = false;
       for (let i = 0; i < mutations.length && !relevant; i++) {
         const m = mutations[i];
-        if (m.target && m.target.id === 'gdmux-root') continue;
+        // "Is this host change relevant?" is adapter knowledge (I-02);
+        // ownership masking is included in the adapter's answer.
         if (m.type === 'childList') {
-          for (let a = 0; a < m.addedNodes.length && !relevant; a++) relevant = isRelevantNode(m.addedNodes[a]);
-          for (let rIdx = 0; rIdx < m.removedNodes.length && !relevant; rIdx++) relevant = isRelevantNode(m.removedNodes[rIdx]);
-        } else if (m.type === 'attributes') {
-          const t = m.target;
-          if (t && t.nodeType === 1) {
-            relevant = (t.classList && t.classList.contains('monaco-workbench')) ||
-              (t.classList && t.classList.contains('part'));
-          }
+          for (let a = 0; a < m.addedNodes.length && !relevant; a++) relevant = adapter.isRelevantNode(m.addedNodes[a]);
+          for (let r = 0; r < m.removedNodes.length && !relevant; r++) relevant = adapter.isRelevantNode(m.removedNodes[r]);
+        } else if (m.type === 'attributes' && m.target && m.target.nodeType === 1) {
+          relevant = adapter.isRelevantNode(m.target);
         }
       }
       if (relevant) scheduler.markDirty('mutation');
     });
-    // attributeFilter intentionally excludes 'style': VS Code writes inline
-    // part metrics continuously during layout; class changes (nosidebar,
-    // nopanel, …) are the state signals GMUX cares about (spec §11).
     mo.observe(document.body, {
       childList: true, subtree: true,
       attributes: true, attributeFilter: ['class', 'aria-hidden'],
       characterData: false,
     });
+    stats.observerActive = true;
   }
 
-  /* ------------------------------ inputs (§15/§22/§23) --------------------- */
-
-  // Monaco protection (§22): never intercept inside these zones.
-  const PROTECTED_SELECTOR = '.monaco-editor, textarea, input, select, [contenteditable="true"], .xterm, .monaco-list';
+  /* ===================== §H INPUT & ANDROID BACK (§34) =================== */
+  // The editor is a protected zone (§30): GMUX adds no pointer/gesture
+  // handlers in v0.1 and only listens for Escape, yielding to Monaco inside
+  // editor regions (the protected-zone answer comes from the adapter, I-02).
+  // Back is never permanently trapped (I-11).
 
   function wireKeyboard() {
     on(window, 'keydown', (ev) => {
-      // Alt+Shift+G is handled by the bootstrap-level listener (it must
-      // survive session teardown to re-enable the shell, spec §39).
-      if (ev.key === 'Escape' && state.modal) {
-        closeModal();
-        return;
-      }
+      if (ev.key === 'Escape' && state.modal) { closeModal(); return; }
       if (ev.key === 'Escape' && !state.modal && state.shellMode === SHELL_MODE.MOBILE &&
           state.activeSurface !== SURFACE.EDITOR) {
-        const t = ev.target;
-        if (t && t.closest && t.closest(PROTECTED_SELECTOR)) return; // Monaco owns Escape there
+        if (adapter.isProtectedTarget(ev.target)) return; // Monaco owns Escape there
+        if (historyStack.length && FEATURES.androidBack) { try { window.history.back(); return; } catch (e) { /* fall through */ } }
         commands.execute('close-surface');
       }
     }, true);
   }
 
-  function wireGestures() {
-    let track = null;
-    on(window, 'pointerdown', (ev) => {
-      if (disposed || !prefsStore.get().gestures) return;
-      if (!ev.isPrimary) return;
-      const t = ev.target;
-      if (t && t.closest && t.closest(PROTECTED_SELECTOR)) return; // spec §23 protections
-      if (t && t.closest && t.closest('#gdmux-root')) return; // shell handles its own input
-      track = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, t0: Date.now(), points: 1 };
-    }, { capture: true, passive: true });
-    on(window, 'pointermove', (ev) => {
-      if (!track || ev.pointerId !== track.id) return;
-      track.x1 = ev.clientX;
-      track.y1 = ev.clientY;
-      track.points++;
-    }, { capture: true, passive: true });
-    const finish = (ev) => {
-      if (!track || ev.pointerId !== track.id) return;
-      const tr = track;
-      track = null;
-      tr.x1 = tr.x1 != null ? tr.x1 : tr.x0;
-      tr.y1 = tr.y1 != null ? tr.y1 : tr.y0;
-      tr.duration = Date.now() - tr.t0;
-      tr.vw = state.viewport.width || window.innerWidth;
-      tr.vh = state.viewport.height || window.innerHeight;
-      const g = classifyGesture(tr);
-      if (g && g.action) {
-        diag.log(null, `gesture ${g.action} (${g.confidence})`, 'info');
-        commands.execute(g.action);
-      }
-      // NO ACTION is the default whenever confidence is insufficient (spec §23).
-    };
-    on(window, 'pointerup', finish, { capture: true, passive: true });
-    on(window, 'pointercancel', () => { track = null; }, { capture: true, passive: true });
+  function desiredHistoryStack(obs) {
+    // Back layering is a v0.1 mobile/compact interaction; DESKTOP mode must
+    // leave browser history completely alone (§34 scope, I-11).
+    if (state.shellMode === SHELL_MODE.DESKTOP) return [];
+    const d = [];
+    if (state.activeSurface && state.activeSurface !== SURFACE.EDITOR && state.activeSurface !== SURFACE.SETTINGS) {
+      d.push('surface');
+    }
+    if (obs && obs.parts.quickInput && obs.parts.quickInput.visible && !dismissingQuickInput && !state.modal) {
+      d.push('quickinput');
+    }
+    if (state.modal) d.push('modal');
+    return d;
   }
 
-  /* --------------------------- reconciler (§7/§31) ------------------------- */
+  function markerState(kind) { return { [HISTORY_MARKER]: true, kind, v: 1 }; }
+
+  // Declarative convergence: push/replace/popping until the owned history
+  // stack matches the currently presented owned UI. Idempotent (§25).
+  function syncHistory(desired) {
+    if (!FEATURES.androidBack) return;
+    let guard = 0;
+    while (historyStack.length < desired.length && guard++ < 4) {
+      const kind = desired[historyStack.length];
+      try { window.history.pushState(markerState(kind), ''); } catch (e) { break; }
+      historyStack.push(kind);
+    }
+    while (historyStack.length > desired.length && guard++ < 8) {
+      internalPops++;
+      try { window.history.back(); } catch (e) { /* noop */ }
+      historyStack.pop();
+    }
+    if (historyStack.length && desired.length &&
+        historyStack[historyStack.length - 1] !== desired[desired.length - 1]) {
+      const kind = desired[desired.length - 1];
+      try { window.history.replaceState(markerState(kind), ''); } catch (e) { /* noop */ }
+      historyStack[historyStack.length - 1] = kind;
+    }
+  }
+
+  function consumeBrowserBack(popState) {
+    // Priority (§34): modal → host quick input → drawer/secondary → default.
+    const decision = planBack({
+      modal: !!state.modal,
+      quickInputVisible: !!(popState && popState.quickInputVisible),
+      activeSurface: state.activeSurface,
+      previousSurface: state.previousSurface,
+    });
+    if (decision.consume === 'modal') {
+      closeModal();
+      stats.backHandled = true;
+      diag.log(null, 'back consumed: closed modal', 'info');
+      return true;
+    }
+    if (decision.consume === 'quickinput') {
+      dismissingQuickInput = true;
+      const r = adapter.dismissQuickInput();
+      recordOperation(r, FAIL.COMMAND_FAILED);
+      stats.backHandled = true;
+      diag.log(null, 'back consumed: dismiss host quick input', 'info');
+      return true;
+    }
+    if (decision.consume === 'surface') {
+      commands.execute('close-surface');
+      stats.backHandled = true;
+      diag.log(null, `back consumed: returned to ${decision.to}`, 'info');
+      return true;
+    }
+    return false; // ALLOW_BROWSER_DEFAULT
+  }
+
+  function wireHistory() {
+    if (!FEATURES.androidBack) return;
+    on(window, 'popstate', (ev) => {
+      scheduler.markDirty('route');
+      if (internalPops > 0) {
+        // Our own convergence pop: syncHistory() already adjusted the stack.
+        internalPops--;
+        return;
+      }
+      const ours = !!(ev.state && ev.state[HISTORY_MARKER] === true);
+      if (!ours) return; // application/route entry: ALLOW_BROWSER_DEFAULT
+      historyStack.pop();
+      const obs = adapter.observe();
+      consumeBrowserBack({ quickInputVisible: !!(obs.parts.quickInput && obs.parts.quickInput.visible) });
+      scheduler.markDirty('back');
+    });
+    // Route observations without monkey-patching pushState (§35): popstate +
+    // MutationObserver surface adoption cover SPA navigation.
+    on(window, 'hashchange', () => scheduler.markDirty('route'));
+  }
+
+  /* ========================= §I RECONCILER (§24/§25) ===================== */
 
   let reconcileGuard = { count: 0, windowStart: Date.now() };
 
@@ -1526,125 +1763,116 @@ function createSession() {
     remove.forEach((c) => { if (el.classList.contains(c)) el.classList.remove(c); });
     add.forEach((c) => { if (!el.classList.contains(c)) el.classList.add(c); });
   }
-
   function applyVars(vars) {
     const style = document.documentElement.style;
     Object.keys(vars).forEach((k) => {
-      if (lastVars[k] !== vars[k]) {
-        style.setProperty(k, vars[k]);
-        lastVars[k] = vars[k];
-      }
+      if (lastVars[k] !== vars[k]) { style.setProperty(k, vars[k]); lastVars[k] = vars[k]; }
     });
   }
-
   function clearVars() {
     const style = document.documentElement.style;
     Object.keys(lastVars).forEach((k) => { style.removeProperty(k); delete lastVars[k]; });
   }
 
-  function verifyPending(obs) {
-    if (!pending) return;
-    const elapsed = Date.now() - pending.t0;
-    let done = false;
-    if (pending.expect === SURFACE.TERMINAL) done = !!(obs.terminal && obs.terminal.visible);
-    else if (pending.expect === SURFACE.EDITOR) {
-      const sidebarGone = !obs.parts.sidebar.visible;
-      const panelGone = !obs.terminal.visible;
-      done = sidebarGone && panelGone;
-    } else {
-      const map = { explorer: 'explorer', search: 'search', git: 'scm' };
-      done = !!obs.parts.sidebar.visible && obs.views.sidebarActiveView === map[pending.expect];
+  function reconcileShellDuplication() {
+    // Invariant I-01/§21: userscript-owned shell count ≤ 1.
+    let roots = [];
+    try { roots = qsaRoots(); } catch (e) { roots = []; }
+    if (roots.length > 1) {
+      diag.log(FAIL.SHELL_DUPLICATION, `observed ${roots.length} shell roots; reconciling to exactly one`, 'error');
+      roots.forEach((r) => { if (r !== shell.root && r.parentNode) applyWrites(() => r.parentNode.removeChild(r)); });
+      return true;
     }
-    if (done) {
-      if (pending.expect === SURFACE.EXPLORER) stats.explorerValidated = true;
-      if (pending.expect === SURFACE.SEARCH) stats.searchValidated = true;
-      if (pending.expect === SURFACE.GIT) stats.gitValidated = true;
-      if (pending.expect === SURFACE.TERMINAL) stats.terminalValidated = true;
-      diag.log(null, `command effect validated: ${pending.cmd} -> ${pending.expect} (evidence: ${EVIDENCE.VALIDATED})`, 'info');
-      pending = null;
-      return;
-    }
-    if (!pending.retried && elapsed > 1200) {
-      // One bounded retry through the alternate adapter mechanism.
-      pending.retried = true;
-      const map = { explorer: 'explorer', search: 'search', git: 'scm' };
-      if (pending.expect === SURFACE.TERMINAL) adapter.openTerminal();
-      else if (pending.expect === SURFACE.EDITOR) adapter.closeSidebar();
-      else adapter.dispatchKeybinding(pending.expect === 'explorer' ? 'openExplorer' : pending.expect === 'search' ? 'openSearch' : 'openGit');
-      diag.log(null, `command retry via fallback mechanism: ${pending.cmd}`, 'info');
-      scheduler.markDirty('retry');
-      return;
-    }
-    if (elapsed > 3200) {
-      const codeMap = {
-        explorer: FAIL.EXPLORER_NOT_FOUND, search: FAIL.SEARCH_NOT_FOUND,
-        git: FAIL.SOURCE_CONTROL_NOT_FOUND, terminal: FAIL.TERMINAL_NOT_FOUND,
-        editor: FAIL.COMMAND_FAILED,
-      };
-      diag.log(codeMap[pending.expect] || FAIL.COMMAND_FAILED,
-        `expected effect not observed for ${pending.cmd} -> ${pending.expect}; capability stays ${caps[pending.expect === 'git' ? 'sourceControl' : pending.expect] || CAP.UNKNOWN}`, 'warn');
-      pending = null;
-    }
+    return false;
   }
+  function qsaRoots() { return Array.prototype.slice.call(document.querySelectorAll(`#${ROOT_ID}`)); }
 
-  function reconcile(reasons) {
+  function reconcile() {
     if (disposed) return;
-    // Loop guard (spec §11): reconciliation must not feed itself.
     const now = Date.now();
     if (now - reconcileGuard.windowStart > 2000) reconcileGuard = { count: 0, windowStart: now };
     reconcileGuard.count++;
     if (reconcileGuard.count > 90) {
-      diag.log(FAIL.RECONCILIATION_FAILED, 'reconciliation rate too high; backing off', 'error');
-      reconcileGuard.windowStart = now; // reset window, skip this cycle
+      diag.log(FAIL.RECONCILIATION_FAILED, 'reconciliation rate too high; backing off this cycle', 'error');
+      reconcileGuard.windowStart = now;
       return;
     }
     try {
+      reconcileShellDuplication();
+
       const obs = adapter.observe();
+      if (dismissingQuickInput && !(obs.parts.quickInput && obs.parts.quickInput.visible)) dismissingQuickInput = false;
+
       const prevCaps = caps;
       caps = adapter.capabilities(obs);
       Object.keys(caps).forEach((k) => {
         if (prevCaps && prevCaps[k] && prevCaps[k] !== caps[k]) {
-          diag.log(null, `capability ${k}: ${prevCaps[k]} -> ${caps[k]} (evidence: ${EVIDENCE.OBSERVED})`, 'info');
+          diag.log(null, `capability ${k}: ${prevCaps[k]} → ${caps[k]} (OBSERVED)`, 'info');
         }
       });
+      state.capabilities = caps;
 
-      verifyPending(obs);
+      // ---- validate pending command effects (§10/§13) --------------------
+      if (pending) {
+        const verdict = evaluatePending(pending, obs, now);
+        if (verdict.state === 'done') {
+          if (pending.expect === SURFACE.EXPLORER) stats.explorerValidated = true;
+          if (pending.expect === SURFACE.SEARCH) stats.searchValidated = true;
+          if (pending.expect === SURFACE.SOURCE_CONTROL) stats.sourceControlValidated = true;
+          if (pending.expect === SURFACE.TERMINAL) stats.terminalValidated = true;
+          diag.log(null, `command effect VALIDATED: ${pending.cmd} → ${pending.expect}`, 'info');
+          pending = null;
+        } else if (verdict.state === 'retry') {
+          pending.retried = true;
+          if (pending.expect === SURFACE.TERMINAL) adapter.dispatchKeybinding('togglePanel');
+          else if (pending.expect === SURFACE.EDITOR) adapter.closePanels();
+          else {
+            const binding = pending.expect === SURFACE.EXPLORER ? 'openExplorer'
+              : pending.expect === SURFACE.SEARCH ? 'openSearch' : 'openSourceControl';
+            adapter.dispatchKeybinding(binding);
+          }
+          diag.log(null, `command retry via fallback mechanism: ${pending.cmd}`, 'info');
+          scheduler.markDirty('retry');
+        } else if (verdict.state === 'expired') {
+          diag.log(verdict.code, `expected effect not observed for ${pending.cmd} → ${pending.expect}`, 'warn');
+          pending = null;
+        }
+      }
 
       const prefs = prefsStore.get();
       const plan = planReconcile({ obs, state, prefs, caps, pending });
+      // Only warnings reach the diagnostic log; steady-state info notes must
+      // not flood it every reconciliation (§43 targets / §37 usefulness).
+      plan.notes.forEach((n) => { if (n.level === 'warn' || n.level === 'error') diag.log(n.code, n.msg, n.level); });
 
-      // State reduction (spec §7) — kernel state adopts the decision.
+      // ---- reduce kernel state -------------------------------------------
       const surfaceChanged = plan.activeSurface !== state.activeSurface;
       state.activeSurface = plan.activeSurface;
       state.previousSurface = plan.previousSurface;
       state.shellMode = plan.shellMode;
       state.immersive = plan.immersiveOn;
       if (plan.fileKey) state.lastFileKey = plan.fileKey;
-      if (plan.adoptedFromApp) {
-        diag.log(null, `surface adopted from application: ${plan.activeSurface} (evidence: ${EVIDENCE.OBSERVED})`, 'info');
-      }
+      if (plan.adoptedFromApp) diag.log(null, `surface adopted from application: ${plan.activeSurface} (OBSERVED)`, 'info');
       if (plan.fileSelected) {
-        diag.log(null, 'file selection observed -> editor surface; closing sidebar drawer', 'info');
-        adapter.closeSidebar(); // spec §14 EXPLORER selectFile -> EDITOR
+        diag.log(null, 'file selection observed in drawer → editor; closing drawer (§31)', 'info');
+        adapter.closePanels();
         pending = { cmd: 'selectFile', expect: SURFACE.EDITOR, t0: Date.now(), retried: false };
       }
 
-      // Mutation (spec §7: only after observe/detect/decide).
+      // ---- MUTATE only after observe → decide (§24) -----------------------
       applyWrites(() => {
         applyVars(plan.vars);
         applyClassDiffs(adapter.workbench(), plan.workbenchAdd, plan.workbenchRemove);
         applyClassDiffs(shell.root, plan.rootAdd, plan.rootRemove);
 
-        // Header current file (write only on change — spec §30).
         const name = plan.headerFile || '';
         if (shell.fileName.textContent !== name) shell.fileName.textContent = name;
 
-        // Toolbar state (spec §20: never falsely advertise terminal).
         SURFACE_BUTTONS.forEach((def) => {
           const b = shell.buttons[def.surface];
           if (!b) return;
           const pressed = plan.pressedSurface === def.surface ||
-            (def.surface === SURFACE.SETTINGS && state.modal === 'settings');
+            (def.surface === SURFACE.SETTINGS && !!state.modal);
           b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
           if (def.surface === SURFACE.TERMINAL) {
             b.setAttribute('aria-disabled', plan.terminalEnabled ? 'false' : 'true');
@@ -1652,103 +1880,128 @@ function createSession() {
         });
       });
 
+      // ---- Android Back convergence (§34) --------------------------------
+      if (FEATURES.androidBack) syncHistory(desiredHistoryStack(obs));
+
       stats.viewportApplied = true;
       stats.immersiveApplied = plan.immersiveOn;
-      stats.reconciles++;
+      state.diagnostics.reconciliationCount++;
+      state.diagnostics.warnings = diag.warnings().map((w) => ({ code: w.code, msg: w.msg }));
 
       if (surfaceChanged) {
         announce(`${plan.activeSurface} surface`);
-        prefsStore.set({ preferredSurface: plan.activeSurface });
+        if (plan.activeSurface !== SURFACE.SETTINGS) prefsStore.set({ preferredSurface: plan.activeSurface });
       }
     } catch (err) {
       diag.log(FAIL.RECONCILIATION_FAILED, String(err && err.message || err), 'error');
+      state.diagnostics.warnings = diag.warnings().map((w) => ({ code: w.code, msg: w.msg }));
     }
   }
 
-  /* ------------------------------ lifecycle (§32) -------------------------- */
+  /* ======================== §J LIFECYCLE (§6/§27) ======================== */
 
-  // Boot guard (spec §32): never repeatedly initialize the shell. Guarded
-  // here (not at call sites) so every entry path is covered.
-  let detectingEntered = false;
-  function enterDetecting() {
-    if (detectingEntered) return;
-    detectingEntered = true;
-    state.lifecycle = LIFECYCLE.DETECTING;
-    diag.log(null, 'workbench observed; detecting capabilities', 'info');
+  let activated = false;
+  function activate() {
+    if (activated) return; // idempotent (§6: boot must be safe to repeat)
+    activated = true;
+    state.lifecycle = LIFECYCLE.BOOTSTRAPPING;
+    diag.log(null, `${NAME} v${USER_INTERFACE_VERSION} activating (adapter ${ADAPTER_VERSION})`, 'info');
+
+    // §6 order: capabilities → classify viewport → mount shell → reconcile.
+    const firstObs = adapter.observe();
+    caps = adapter.capabilities(firstObs);
+    state.capabilities = caps;
+
+    wireViewport();
+
     try {
       ensureStyle();
+      // §21: never mount a second shell if one already exists (duplicate eval).
+      const existing = document.getElementById(ROOT_ID);
+      if (existing) {
+        diag.log(FAIL.SHELL_DUPLICATION, 'a shell root already existed at mount; reusing it', 'warn');
+        if (existing.parentNode) existing.parentNode.removeChild(existing);
+      }
       shell = buildShell();
       shell.mount();
-      diag.log(null, 'shell mounted', 'info');
+      stats.shellMounted = true;
+      diag.log(null, 'shell mounted exactly once', 'info');
     } catch (err) {
       state.lifecycle = LIFECYCLE.FAILED;
       diag.log(FAIL.SHELL_MOUNT_FAILED, String(err && err.message || err), 'error');
       return;
     }
-    wireViewport();
+
     wireObserver();
     wireKeyboard();
-    wireGestures();
+    wireHistory();
     scheduler.onReconcile(reconcile);
     reconcile(['initial']);
-    const obsCaps = caps;
-    state.lifecycle = obsCaps.editor === CAP.DETECTED ? LIFECYCLE.ACTIVE : LIFECYCLE.DEGRADED;
+
+    state.lifecycle = caps.editor === CAP.DETECTED ? LIFECYCLE.ACTIVE : LIFECYCLE.DEGRADED;
     if (state.lifecycle === LIFECYCLE.DEGRADED) {
-      diag.log(FAIL.EDITOR_NOT_FOUND, 'workbench present but editor not detected; shell active in degraded mode', 'warn');
+      diag.log(FAIL.EDITOR_NOT_DETECTED, 'workbench present but editor not detected; degraded, remaining features continue (§46/§47)', 'warn');
     }
-    // Restore preferred surface if it is detectable (spec §28).
+
+    // Restore preferred surface if its capability was observed (§39).
     const pref = prefsStore.get().preferredSurface;
-    const capKey = pref === 'git' ? 'sourceControl' : pref;
-    if (pref && pref !== SURFACE.EDITOR && obsCaps[capKey] === CAP.DETECTED) {
-      const cmd = { explorer: 'open-explorer', search: 'open-search', git: 'open-git', terminal: 'open-terminal' }[pref];
-      if (cmd) setTimeout(() => { if (!disposed) commands.execute(cmd); }, 400); // bounded one-shot, not polling
+    if (pref && pref !== SURFACE.EDITOR && DRAWER_SURFACES.indexOf(pref) !== -1) {
+      const capKey = pref === SURFACE.SOURCE_CONTROL ? 'sourceControl' : pref;
+      if (caps[capKey] === CAP.DETECTED) {
+        setTimeout(() => { if (!disposed) dispatch({ type: 'OPEN_SURFACE', surface: pref }); }, 400); // bounded one-shot
+      }
     }
-    window.__GDMUX__.lifecycle = state.lifecycle;
+    if (window.__GMUX__) window.__GMUX__.lifecycle = state.lifecycle;
   }
 
   function start() {
-    diag.log(null, `${NAME} v${USER_INTERFACE_VERSION} bootstrapping (adapter ${ADAPTER_VERSION})`, 'info');
+    diag.log(null, `${NAME} v${USER_INTERFACE_VERSION} bootstrap starting`, 'info');
     prefsStore.load();
-    if (adapter.isPresent()) {
-      enterDetecting();
-      return;
-    }
+
+    const detection = adapter.detect();
+    if (detection.ok) { activate(); return; }
+
     state.lifecycle = LIFECYCLE.WAITING_FOR_APP;
-    diag.log(null, 'workbench not yet present; waiting for application (no polling)', 'info');
+    diag.log(FAIL.APPLICATION_NOT_DETECTED, 'VS Code workbench not present yet; waiting via observer (no polling)', 'info');
     bootObserver = new MutationObserver(() => {
-      if (adapter.isPresent()) {
+      if (adapter.detect().ok) {
         if (bootObserver) { bootObserver.disconnect(); bootObserver = null; }
         if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
-        enterDetecting();
+        activate();
       }
     });
     bootObserver.observe(document.documentElement, { childList: true, subtree: true });
-    // Bounded one-shot warning — observation continues reactively afterwards.
+    // Bounded one-shot warning (§27): observation stays reactive afterwards.
     bootTimer = setTimeout(() => {
       if (state.lifecycle === LIFECYCLE.WAITING_FOR_APP) {
         state.lifecycle = LIFECYCLE.DEGRADED;
-        diag.log(FAIL.UNSUPPORTED_GITHUB_LAYOUT, 'no VS Code workbench observed after 25s; staying reactive', 'warn');
+        diag.log(FAIL.UNSUPPORTED_LAYOUT, 'no VS Code workbench observed after 30s; staying reactive (§59)', 'warn');
+        if (window.__GMUX__) window.__GMUX__.lifecycle = state.lifecycle;
       }
-    }, 25000);
+    }, 30000);
   }
-
-  /* ------------------------------ teardown (§39) --------------------------- */
 
   function dispose() {
     disposed = true;
     closeModal();
+    // Remove our history layers so Back is never left trapped (§34/I-11).
+    if (FEATURES.androidBack) {
+      while (historyStack.length) { internalPops++; try { window.history.back(); } catch (e) { /* noop */ } historyStack.pop(); }
+    }
     if (mo) { mo.disconnect(); mo = null; }
+    stats.observerActive = false;
     if (bootObserver) { bootObserver.disconnect(); bootObserver = null; }
     if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
     listeners.splice(0).forEach(([t, type, fn, opts]) => {
       try { t.removeEventListener(type, fn, opts); } catch (e) { /* noop */ }
     });
     if (shell) { shell.unmount(); shell = null; }
+    stats.shellMounted = false;
     const styleEl = document.getElementById(STYLE_ID);
     if (styleEl && styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
     const wb = adapter.workbench();
     if (wb) {
-      ['gdmux-mode-mobile', 'gdmux-mode-compact', 'gdmux-mode-desktop', 'gdmux-immersive', 'gdmux-sidebar-overlay', 'gdmux-panel-overlay']
+      ['gmux-mode-mobile', 'gmux-mode-compact', 'gmux-mode-desktop', 'gmux-immersive', 'gmux-sidebar-overlay', 'gmux-panel-overlay']
         .forEach((c) => wb.classList.remove(c));
     }
     clearVars();
@@ -1756,120 +2009,138 @@ function createSession() {
   }
 
   return {
-    diag, state, stats, commands, prefsStore, scheduler, adapter,
+    diag, state, stats, commands, prefsStore, scheduler, adapter, dispatch,
     get caps() { return caps; },
     get pending() { return pending; },
-    start, dispose,
-    buildReport,
+    start, dispose, activate, reconcile, buildReport,
+    // test/debug helpers
+    markDirty: (r) => scheduler.markDirty(r),
   };
 }
 
 /* ===========================================================================
- * §K BOOTSTRAP, DISABLE/REVIVE, EXPORTS
+ * §K BOOTSTRAP, TEARDOWN, EXPORTS
  * =========================================================================*/
 
 function setDisabledFlag(disabled) {
   try {
     if (disabled) window.localStorage.setItem(DISABLED_FLAG_KEY, '1');
     else window.localStorage.removeItem(DISABLED_FLAG_KEY);
-  } catch (e) { /* private mode — flag simply won't persist */ }
+  } catch (e) { /* private mode — flag simply will not persist */ }
 }
 function getDisabledFlag() {
   try { return window.localStorage.getItem(DISABLED_FLAG_KEY) === '1'; } catch (e) { return false; }
 }
 
 function mountReviveChip() {
-  if (document.querySelector('.gdmux-revive')) return;
+  if (document.querySelector('.gmux-revive')) return;
   const b = document.createElement('button');
-  b.className = 'gdmux-revive';
-  // Inline styles: the GMUX stylesheet is removed during teardown (spec §39),
-  // the revive affordance must survive it.
-  b.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:940;width:34px;height:34px;border-radius:50%;' +
+  b.className = 'gmux-revive';
+  b.setAttribute(OWNER_ATTR, OWNER_VALUE);
+  b.setAttribute('aria-label', `Re-enable ${NAME} (Alt+Shift+G)`);
+  b.title = `Re-enable ${NAME}`;
+  // Inline styles are intentional: the namespaced stylesheet is removed
+  // during teardown, and the revive affordance must still be presentable.
+  b.style.cssText =
+    'position:fixed;right:10px;bottom:10px;z-index:940;width:34px;height:34px;border-radius:50%;' +
     'background:#0e639c;color:#fff;display:flex;align-items:center;justify-content:center;' +
     'font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.4);border:0;cursor:pointer;' +
-    'font-family:system-ui,sans-serif;';
+    'font-family:system-ui,sans-serif;padding:0;pointer-events:auto;';
   b.textContent = 'GM';
-  b.setAttribute('aria-label', `Re-enable ${NAME} (or press Alt+Shift+G)`);
-  b.title = `Re-enable ${NAME}`;
   b.addEventListener('click', () => enableShell());
   document.body.appendChild(b);
 }
 
 function disableShell(persist) {
   if (session) {
-    session.diag.log(null, 'shell disabled by user; GitHub application left intact (spec §39)', 'info');
+    session.diag.log(null, 'shell disabled by user; GitHub application left intact', 'info');
     session.dispose();
     session = null;
   }
   if (persist) setDisabledFlag(true);
   mountReviveChip();
-  if (window.__GDMUX__) window.__GDMUX__.lifecycle = LIFECYCLE.DISABLED;
+  if (window.__GMUX__) window.__GMUX__.lifecycle = LIFECYCLE.DISABLED;
 }
 
 function enableShell() {
   setDisabledFlag(false);
-  const chip = document.querySelector('.gdmux-revive');
+  const chip = document.querySelector('.gmux-revive');
   if (chip && chip.parentNode) chip.parentNode.removeChild(chip);
-  boot();
+  bootstrap();
 }
 
-function boot() {
-  if (session) return; // idempotent initialization (spec §32)
+function bootstrap() {
+  // §6 + §7: host verification precedes ALL DOM mutation.
+  let target = TARGET.UNSUPPORTED;
+  try { target = detectTarget(window.location); } catch (e) { target = TARGET.UNSUPPORTED; }
+  if (target !== TARGET.SUPPORTED) {
+    try { console.info(`[${NAME}] ${TARGET.UNSUPPORTED}: no shell injected (§7).`); } catch (e) { /* noop */ }
+    return;
+  }
+  if (session) return; // safe to execute repeatedly (§6 idempotence)
   if (getDisabledFlag()) { mountReviveChip(); return; }
   try {
     session = createSession();
     session.start();
   } catch (err) {
     session = null;
-    try { console.error(`[${NAME}]`, FAIL.BOOTSTRAP_FAILED, err); } catch (e) { /* noop */ }
+    try { console.error(`[${NAME}] ${FAIL.BOOTSTRAP_FAILED}`, err); } catch (e) { /* noop */ }
   }
 }
 
-// Alt+Shift+G hotkey lives outside the session so disable is reversible
-// without a page reload (spec §39).
 if (HAS_DOM) {
-  window.addEventListener('keydown', (ev) => {
-    if (ev.altKey && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && (ev.code === 'KeyG' || ev.key === 'g' || ev.key === 'G')) {
-      ev.preventDefault();
-      if (session) disableShell(true);
-      else enableShell();
+  // Duplicate-evaluation guard (e.g. script installed twice): never build a
+  // second instance — §21 shell count ≤ 1, §6 idempotence.
+  if (!window.__GMUX__) {
+    window.__GMUX__ = {
+      name: NAME,
+      version: USER_INTERFACE_VERSION,
+      adapterId: ADAPTER_ID,
+      adapterVersion: ADAPTER_VERSION,
+      preferenceSchemaVersion: PREFERENCE_SCHEMA_VERSION,
+      features: Object.freeze(Object.assign({}, FEATURES)),
+      lifecycle: null,
+      enable: enableShell,
+      disable: () => disableShell(true),
+      dispatch: (action) => (session ? session.dispatch(action) : { ok: false, code: FAIL.ADAPTER_NOT_FOUND }),
+      diagnostics: () => (session ? session.buildReport() : `${NAME} disabled — press Alt+Shift+G to re-enable`),
+      state: () => (session ? JSON.parse(JSON.stringify(session.state)) : null),
+      // local debug/test affordance — schedules one reconciliation, no network
+      poke: (reason) => { if (session) session.markDirty(reason || 'poke'); },
+    };
+
+    // Alt+Shift+G lives outside the session so disable is reversible.
+    window.addEventListener('keydown', (ev) => {
+      if (ev.altKey && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && (ev.code === 'KeyG' || ev.key === 'g' || ev.key === 'G')) {
+        ev.preventDefault();
+        if (session) disableShell(true); else enableShell();
+      }
+    }, true);
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+    } else {
+      bootstrap();
     }
-  }, true);
-
-  // Console/dev hook — local only, never transmits anything (spec §29).
-  window.__GDMUX__ = {
-    name: NAME,
-    version: USER_INTERFACE_VERSION,
-    adapterVersion: ADAPTER_VERSION,
-    preferenceSchemaVersion: PREFERENCE_SCHEMA_VERSION,
-    lifecycle: null,
-    enable: enableShell,
-    disable: () => disableShell(true),
-    diagnostics: () => (session ? session.buildReport() : `${NAME} disabled — press Alt+Shift+G to re-enable`),
-    state: () => (session ? JSON.parse(JSON.stringify(session.state)) : null),
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
-  } else {
-    boot();
   }
 }
 
-/* ------------------------- test exports (Node only) ------------------------ */
+/* ------------------------- test exports (Node only) ----------------------- */
 const TEST_EXPORTS = {
-  NAME, USER_INTERFACE_VERSION, ADAPTER_VERSION, PREFERENCE_SCHEMA_VERSION,
-  SHELL_MODE, SURFACE, LIFECYCLE, CAP, EVIDENCE, FSTATUS, FAIL,
-  DEFAULT_BREAKPOINTS, PREF_DEFAULTS,
-  modeForWidth, transitionFor, parsePreferences, classifyCapabilities,
-  terminalHostExpectation, inferKeyboard, classifyGesture, planReconcile,
-  computeFeatureStatuses, createScheduler, createCommandRegistry, createDiagLog,
-  createPreferenceStore,
+  NAME, USER_INTERFACE_VERSION, ADAPTER_ID, ADAPTER_VERSION, PREFERENCE_SCHEMA_VERSION,
+  SHELL_MODE, SURFACE, LIFECYCLE, TARGET, CAP, EVIDENCE, FSTATUS, FAIL, FEATURES,
+  DEFAULT_BREAKPOINTS, PREF_DEFAULTS, ROOT_ID, OWNER_ATTR, OWNER_VALUE,
+  // Adapter exists only when DOM globals are present; used by adapter-flow.mjs.
+  __adapter: HAS_DOM ? GitHubDevAdapter : null,
+  createDiagLog, detectTarget, createScheduler, modeForWidth, transitionFor, planBack,
+  parsePreferences, createPreferenceStore, createCommandRegistry,
+  classifyCapabilities, terminalHostExpectation, inferKeyboard, evaluatePending,
+  planReconcile, computeFeatureStatuses,
 };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = TEST_EXPORTS;
 } else if (HAS_DOM) {
-  try { window.__GDMUX_INTERNALS__ = TEST_EXPORTS; } catch (e) { /* noop */ }
+  try { window.__GMUX_INTERNALS__ = TEST_EXPORTS; } catch (e) { /* noop */ }
 }
 
 })();
