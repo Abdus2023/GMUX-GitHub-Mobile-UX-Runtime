@@ -1,0 +1,334 @@
+{
+  "artifact": "github-dev-mobile.user.js",
+  "version": "0.1.0",
+  "adapter": "github-dev",
+  "collectedAt": "2026-09-15T15:56:42.550Z",
+  "environment": {
+    "runtime": "node v22.22.3",
+    "os": "linux",
+    "note": "headless static + fake-DOM; no live github.dev session"
+  },
+  "suites": {
+    "kernelUnits": {
+      "passed": 113,
+      "zeroFailures": true
+    },
+    "domSmoke": {
+      "passed": 37,
+      "zeroFailures": true
+    },
+    "adapterFlow": {
+      "passed": 50,
+      "zeroFailures": true
+    }
+  },
+  "summary": {
+    "PASS": 9,
+    "PARTIAL": 11,
+    "UNTESTED": 1,
+    "BLOCKED": 0,
+    "FAIL": 0
+  },
+  "finalStatus": "PARTIALLY_VERIFIED",
+  "gates": [
+    {
+      "gate": "G0",
+      "name": "script-loads",
+      "status": "PASS",
+      "evidence": {
+        "metadata": {
+          "name": "GitHub.dev Mobile UX",
+          "version": "0.1.0",
+          "runAt": "document-idle",
+          "grant": "none"
+        },
+        "unitSuite": {
+          "passed": 113,
+          "zeroFailures": true
+        },
+        "smokeSuite": {
+          "passed": 37,
+          "zeroFailures": true
+        },
+        "adapterFlowSuite": {
+          "passed": 50,
+          "zeroFailures": true
+        }
+      }
+    },
+    {
+      "gate": "G1",
+      "name": "no-uncaught-exceptions",
+      "status": "PASS",
+      "evidence": {
+        "automatedSuites": "all three complete with exit code 0"
+      }
+    },
+    {
+      "gate": "G2",
+      "name": "github-dev-detected",
+      "status": "PASS",
+      "evidence": {
+        "cases": [
+          {
+            "hostname": "github.dev",
+            "pathname": "/x",
+            "expected": "SUPPORTED_TARGET"
+          },
+          {
+            "hostname": "foo.github.dev",
+            "pathname": "/",
+            "expected": "SUPPORTED_TARGET"
+          },
+          {
+            "hostname": "vscode.dev",
+            "pathname": "/github/a/b",
+            "expected": "SUPPORTED_TARGET"
+          },
+          {
+            "hostname": "vscode.dev",
+            "pathname": "/microsoft/vscode",
+            "expected": "UNSUPPORTED_TARGET"
+          },
+          {
+            "hostname": "evil.example",
+            "pathname": "/",
+            "expected": "UNSUPPORTED_TARGET"
+          }
+        ],
+        "hostCheckPrecedesDomMutation": true
+      }
+    },
+    {
+      "gate": "G3",
+      "name": "mobile-mode-detected",
+      "status": "PARTIAL",
+      "evidence": {
+        "breakpointsTested": {
+          "320": "mobile",
+          "600": "compact",
+          "1024": "compact",
+          "1025": "desktop"
+        },
+        "classificationLogic": "PASS (pure kernel)",
+        "liveDeviceRender": "UNTESTED — requires an Android browser session"
+      }
+    },
+    {
+      "gate": "G4",
+      "name": "shell-appears-exactly-once",
+      "status": "PASS",
+      "evidence": {
+        "shellCountAfterMount": 1,
+        "toolbarCount": 1,
+        "stylesheetCount": 1,
+        "afterReconciliations": 10,
+        "injectedDuplicateRemoved": true,
+        "codeEmitted": "SHELL_DUPLICATION",
+        "suite": "dom-smoke 37 checks"
+      }
+    },
+    {
+      "gate": "G5",
+      "name": "editor-remains-usable",
+      "status": "UNTESTED",
+      "evidence": {
+        "designBasis": "no pointer/gesture handlers in v0.1; Escape yields inside editor regions; focus via Monaco textarea.inputarea only (§30)",
+        "requiredLiveChecks": [
+          "editable",
+          "cursor",
+          "selection",
+          "copy/paste",
+          "scroll",
+          "keyboard input"
+        ]
+      },
+      "reason": "physical Android/DevTools session required"
+    },
+    {
+      "gate": "G6",
+      "name": "explorer-opens",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(explorer) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+      }
+    },
+    {
+      "gate": "G7",
+      "name": "explorer-closes",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(explorer) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+      }
+    },
+    {
+      "gate": "G8",
+      "name": "search-opens",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(search) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+      }
+    },
+    {
+      "gate": "G9",
+      "name": "search-closes",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(search) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+      }
+    },
+    {
+      "gate": "G10",
+      "name": "source-control-opens",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(sourceControl) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev",
+        "gitState": "no GMUX Git state by construction (§33)"
+      }
+    },
+    {
+      "gate": "G11",
+      "name": "source-control-closes",
+      "status": "PARTIAL",
+      "evidence": {
+        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
+        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(sourceControl) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
+        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
+        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+      }
+    },
+    {
+      "gate": "G12",
+      "name": "android-back-behaves-correctly",
+      "status": "PARTIAL",
+      "evidence": {
+        "priorityDecision": "modal→quickinput→drawer/secondary→ALLOW_BROWSER_DEFAULT (pure test PASS)",
+        "fakeDomEvidence": "popstate opens/closes modal; unowned back falls through; history entries removed",
+        "neverTrapped": "entries exist only while owned UI is presented (§34/I-11)",
+        "liveAndroidChrome": "UNTESTED"
+      }
+    },
+    {
+      "gate": "G13",
+      "name": "keyboard-does-not-destroy-layout",
+      "status": "PARTIAL",
+      "evidence": {
+        "inference": "visualViewport collapse → INFERRED keyboard; CSS geometry vars unit-tested",
+        "toolbarAnchoredToVisualViewport": true,
+        "physicalKeyboard": "UNTESTED — Android soft keyboard session required"
+      }
+    },
+    {
+      "gate": "G14",
+      "name": "route-changes-survive",
+      "status": "PARTIAL",
+      "evidence": {
+        "adoption": "appSurface changes adopted via planner; pending-command guard tested",
+        "observers": "MutationObserver + popstate/hashchange; pushState is not monkey-patched (§35)",
+        "liveSpaNavigation": "UNTESTED"
+      }
+    },
+    {
+      "gate": "G15",
+      "name": "reconciliation-idempotent",
+      "status": "PASS",
+      "evidence": {
+        "before": {
+          "shellCount": 1,
+          "toolbarCount": 1,
+          "explorerButtons": 1
+        },
+        "after": {
+          "shellCount": 1,
+          "toolbarCount": 1,
+          "explorerButtons": 1
+        },
+        "reconciliations": 10,
+        "formalProperty": "R(R(S)) = R(S) for stable observation (class/var diffing, single-shell guard)"
+      }
+    },
+    {
+      "gate": "G16",
+      "name": "preferences-survive-reload",
+      "status": "PARTIAL",
+      "evidence": {
+        "persistenceRoundTrip": "new session via disable→enable reads persisted prefs (fake DOM PASS)",
+        "fullPageReload": "UNTESTED on live host"
+      }
+    },
+    {
+      "gate": "G17",
+      "name": "corrupt-preferences-do-not-prevent-startup",
+      "status": "PASS",
+      "evidence": {
+        "cases": [
+          "invalid JSON",
+          "foreign schema version",
+          "non-object payload",
+          "hostile throwing storage"
+        ],
+        "outcome": "PREFERENCE_PARSE_FAILED emitted, defaults used, boot continues"
+      }
+    },
+    {
+      "gate": "G18",
+      "name": "unsupported-capabilities-reported",
+      "status": "PASS",
+      "evidence": {
+        "capabilityModel": "DETECTED / NOT_DETECTED / UNKNOWN preserved",
+        "terminal": "NOT_DETECTED + feature flag terminalSurface=false; control aria-disabled; diagnostics warn",
+        "commandPaletteClosed": "UNKNOWN (never false without evidence)",
+        "hostRemoval": "adapter-flow: with the workbench removed all capabilities collapse to UNKNOWN and openExplorer returns a structured EXPLORER_NOT_DETECTED failure rather than a silent success",
+        "noVerifiedWithoutEvidence": "feature-status map unit-tested"
+      }
+    },
+    {
+      "gate": "G19",
+      "name": "userscript-makes-zero-network-requests",
+      "status": "PASS",
+      "evidence": {
+        "forbiddenPrimitivesScanned": [
+          "fetch-call",
+          "XMLHttpRequest",
+          "WebSocket",
+          "sendBeacon",
+          "GM_xmlhttpRequest",
+          "EventSource",
+          "dynamic-import",
+          "rtcdatachannel"
+        ],
+        "hits": [],
+        "clipboardNote": "navigator.clipboard.writeText is local-only, retained for diagnostics copy"
+      }
+    },
+    {
+      "gate": "G20",
+      "name": "userscript-has-zero-external-dependencies",
+      "status": "PASS",
+      "evidence": {
+        "metadata": {
+          "require": "none declared",
+          "resource": "none declared",
+          "grant": "none"
+        },
+        "requireDirectivePresent": false,
+        "buildStepRequired": false
+      }
+    }
+  ]
+}
