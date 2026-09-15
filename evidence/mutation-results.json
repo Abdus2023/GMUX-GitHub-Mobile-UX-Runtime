@@ -1,0 +1,179 @@
+{
+  "generatedAt": "2026-09-15T17:24:11.123Z",
+  "provenance": "stub workbench mirroring fixtures/*.html — NOT live-host VALIDATED (see VERIFICATION_REPORT.md)",
+  "artifact": "github-dev-mobile.user.js",
+  "version": "0.1.0",
+  "invariant": "Broken DOM recognition MUST degrade capability status rather than silently executing the wrong action (§46).",
+  "mutations": [
+    {
+      "mutation": "aria-label-changed",
+      "resolve": {
+        "status": "BLOCKED",
+        "via": "none",
+        "evidence": {
+          "kind": "none",
+          "value": "explorer",
+          "count": 0
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": false,
+        "invoked": true,
+        "mechanism": "keybinding",
+        "stateChanged": false,
+        "level": "INFERRED"
+      },
+      "sidebarActiveViewAfter": null,
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "button-removed",
+      "resolve": {
+        "status": "BLOCKED",
+        "via": "none",
+        "evidence": {
+          "kind": "none",
+          "value": "explorer",
+          "count": 0
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": false,
+        "invoked": true,
+        "mechanism": "keybinding",
+        "stateChanged": false,
+        "level": "INFERRED"
+      },
+      "sidebarActiveViewAfter": null,
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "container-renamed",
+      "resolve": {
+        "status": "PROVISIONAL",
+        "via": "semantic",
+        "evidence": {
+          "kind": "aria-label",
+          "value": "explorer",
+          "count": 1
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": true,
+        "invoked": true,
+        "mechanism": "activity-click",
+        "stateChanged": true,
+        "level": "VALIDATED"
+      },
+      "sidebarActiveViewAfter": "explorer",
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "element-moved",
+      "resolve": {
+        "status": "BLOCKED",
+        "via": "none",
+        "evidence": {
+          "kind": "none",
+          "value": "explorer",
+          "count": 0
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": false,
+        "invoked": true,
+        "mechanism": "keybinding",
+        "stateChanged": false,
+        "level": "INFERRED"
+      },
+      "sidebarActiveViewAfter": null,
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "element-duplicated",
+      "resolve": {
+        "status": "MATCHED",
+        "via": "known-selector",
+        "evidence": {
+          "selector": ".part.activitybar [id=\"workbench.view.explorer\"] .action-label",
+          "source": "reconnaissance",
+          "confidence": 2,
+          "observedAt": "2026-09-15",
+          "purpose": "explorer",
+          "status": "PROVISIONAL"
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": true,
+        "invoked": true,
+        "mechanism": "activity-click",
+        "stateChanged": true,
+        "level": "VALIDATED"
+      },
+      "sidebarActiveViewAfter": "explorer",
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "element-hidden",
+      "resolve": {
+        "status": "MATCHED",
+        "via": "known-selector",
+        "evidence": {
+          "selector": ".part.activitybar [id=\"workbench.view.explorer\"] .action-label",
+          "source": "reconnaissance",
+          "confidence": 2,
+          "observedAt": "2026-09-15",
+          "purpose": "explorer",
+          "status": "PROVISIONAL"
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": true,
+        "invoked": true,
+        "mechanism": "activity-click",
+        "stateChanged": true,
+        "level": "VALIDATED"
+      },
+      "sidebarActiveViewAfter": "explorer",
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    },
+    {
+      "mutation": "role-changed",
+      "resolve": {
+        "status": "MATCHED",
+        "via": "known-selector",
+        "evidence": {
+          "selector": ".part.activitybar [id=\"workbench.view.explorer\"] .action-label",
+          "source": "reconnaissance",
+          "confidence": 2,
+          "observedAt": "2026-09-15",
+          "purpose": "explorer",
+          "status": "PROVISIONAL"
+        }
+      },
+      "openExplorer": {
+        "ok": true,
+        "elementFound": true,
+        "invoked": true,
+        "mechanism": "activity-click",
+        "stateChanged": true,
+        "level": "VALIDATED"
+      },
+      "sidebarActiveViewAfter": "explorer",
+      "drift": [],
+      "verdict": "OK: degraded or correct, never the wrong action"
+    }
+  ]
+}

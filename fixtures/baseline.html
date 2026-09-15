@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: baseline</title>
+<!--
+  baseline.html → normal capabilities.
+  Minimal VS Code Web workbench: editor + explorer/search/scm triggers with
+  stable ids and accessible names, sidebar showing the Explorer view, Monaco
+  editor with a semantic data-uri, no terminal, no quick input.
+  Expected: editor/explorer/search/sourceControl DETECTED; terminal
+  NOT_DETECTED; discovery explorer/search/scm=2 (IDENTIFIED).
+  Static fixture only — no scripts. See tests/recon-fixtures.mjs.
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part titlebar"></div>
+  <div class="part activitybar">
+    <div class="action-item" id="workbench.view.explorer"><a class="action-label" aria-label="Explorer">Ex</a></div>
+    <div class="action-item" id="workbench.view.search"><a class="action-label" aria-label="Search">Se</a></div>
+    <div class="action-item" id="workbench.view.scm"><a class="action-label" aria-label="Source Control">Sc</a></div>
+  </div>
+  <div class="part sidebar">
+    <div class="explorer-folders-view"></div>
+  </div>
+  <div class="part editor">
+    <div class="monaco-editor" data-uri="file:///src/main.rs"><textarea class="inputarea"></textarea></div>
+    <div class="tab active"><span class="label-name">main.rs</span></div>
+  </div>
+  <div class="part panel" style="display:none"></div>
+  <div class="part statusbar"></div>
+</div>
+</body>
+</html>

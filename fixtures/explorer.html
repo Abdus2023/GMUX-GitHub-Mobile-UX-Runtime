@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: explorer</title>
+<!--
+  explorer.html → minimal Explorer recognition case.
+  Workbench + Explorer activity trigger + visible Explorer view content.
+  Expected: explorer DETECTED/IDENTIFIED; ExplorerSurface.detect() true.
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part activitybar">
+    <div class="action-item" id="workbench.view.explorer"><a class="action-label" aria-label="Explorer">Ex</a></div>
+  </div>
+  <div class="part sidebar">
+    <div class="explorer-folders-view"></div>
+  </div>
+  <div class="part editor">
+    <div class="monaco-editor" data-uri="file:///src/app.js"><textarea class="inputarea"></textarea></div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: search</title>
+<!--
+  search.html → minimal Search recognition case.
+  Workbench + Search activity trigger + visible Search view with an input.
+  Expected: search DETECTED/IDENTIFIED; focusSearchInput() finds the input.
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part activitybar">
+    <div class="action-item" id="workbench.view.search"><a class="action-label" aria-label="Search">Se</a></div>
+  </div>
+  <div class="part sidebar">
+    <div class="search-view"><input type="text" aria-label="Search"></div>
+  </div>
+  <div class="part editor">
+    <div class="monaco-editor" data-uri="file:///src/app.js"><textarea class="inputarea"></textarea></div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GMUX fixture: changed-label</title>
+<!--
+  changed-label.html → known selector fails, semantic candidate PROVISIONAL.
+  The Explorer trigger lost its stable id (known id selector fails) and its
+  accessible name changed, but still carries Explorer prefix semantics, so
+  semantic discovery yields exactly one candidate.
+  Expected: resolveSurfaceTarget('explorer') → status PROVISIONAL via
+  semantic evidence; the candidate is recorded, never auto-promoted (§18).
+-->
+</head>
+<body>
+<div class="monaco-workbench">
+  <div class="part activitybar">
+    <div class="action-item"><a class="action-label" aria-label="Explorer (Files)">Ex</a></div>
+    <div class="action-item" id="workbench.view.search"><a class="action-label" aria-label="Search">Se</a></div>
+  </div>
+  <div class="part sidebar">
+    <div class="explorer-folders-view"></div>
+  </div>
+  <div class="part editor">
+    <div class="monaco-editor" data-uri="file:///src/app.js"><textarea class="inputarea"></textarea></div>
+  </div>
+</div>
+</body>
+</html>

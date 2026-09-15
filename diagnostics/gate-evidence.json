@@ -2,7 +2,7 @@
   "artifact": "github-dev-mobile.user.js",
   "version": "0.1.0",
   "adapter": "github-dev",
-  "collectedAt": "2026-09-15T15:56:42.550Z",
+  "collectedAt": "2026-09-15T17:24:11.756Z",
   "environment": {
     "runtime": "node v22.22.3",
     "os": "linux",
@@ -19,6 +19,10 @@
     },
     "adapterFlow": {
       "passed": 50,
+      "zeroFailures": true
+    },
+    "reconFixtures": {
+      "passed": 126,
       "zeroFailures": true
     }
   },
@@ -53,6 +57,10 @@
         "adapterFlowSuite": {
           "passed": 50,
           "zeroFailures": true
+        },
+        "reconFixturesSuite": {
+          "passed": 126,
+          "zeroFailures": true
         }
       }
     },
@@ -61,7 +69,7 @@
       "name": "no-uncaught-exceptions",
       "status": "PASS",
       "evidence": {
-        "automatedSuites": "all three complete with exit code 0"
+        "automatedSuites": "all four complete with exit code 0"
       }
     },
     {
@@ -294,7 +302,8 @@
         "terminal": "NOT_DETECTED + feature flag terminalSurface=false; control aria-disabled; diagnostics warn",
         "commandPaletteClosed": "UNKNOWN (never false without evidence)",
         "hostRemoval": "adapter-flow: with the workbench removed all capabilities collapse to UNKNOWN and openExplorer returns a structured EXPLORER_NOT_DETECTED failure rather than a silent success",
-        "noVerifiedWithoutEvidence": "feature-status map unit-tested"
+        "noVerifiedWithoutEvidence": "feature-status map unit-tested",
+        "inspectionFirst": "recon-fixtures: 7 static fixtures verified minimal/scriptless; 7 DOM mutations degrade with diagnostic evidence (ADAPTER_DRIFT / PROVISIONAL / BLOCKED) and never validate the wrong view; malformed host stays safe"
       }
     },
     {

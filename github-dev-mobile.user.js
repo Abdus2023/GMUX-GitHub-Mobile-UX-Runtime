@@ -19,22 +19,31 @@
 /**
  * GitHub.dev Mobile UX (GMUX) — v0.1.0 Concrete Implementation
  * ---------------------------------------------------------------------------
- * Normative spec: SPEC.md ("v0.1 Concrete Implementation Contract").
+ * Normative specs: SPEC.md ("v0.1 Concrete Implementation Contract") plus the
+ * inspection-first contract (reconnaissance → evidence → capability →
+ * adapter → kernel → shell → observation → validation).
  *
  * Governing laws:
+ *   Inspect first. Select second. Operate third. Validate fourth.
  *   Observe → Normalize → Decide → Mutate → Observe → Validate.
  *   The userscript owns mobile interaction; GitHub/VS Code owns app state.
  *   NO EVIDENCE → NO VERIFIED CLAIM.
  *   When the host is unknown, degrade or stop; do not guess.
+ *   A selector is evidence, not truth. Detection is not operation.
+ *   Operation is not validation. Broken recognition degrades safely.
  *
  * Single-file layout:
  *   §A identity & versions          §B vocabulary (enums, codes, flags)
  *   §C pure kernel (no DOM, no GitHub selectors — unit tested)
  *   §D github-dev adapter           ALL GitHub/VS Code DOM knowledge lives here
+ *     (reconnaissance · selector registry + provenance · semantic fallback ·
+ *      drift detection · Surface classes · structured operations)
  *   §E namespaced stylesheet        (.gmux-*, state classes only)
- *   §F shell UI                     §G viewport / keyboard
+ *   §F shell UI                     §G viewport / keyboard / environment
  *   §H input & Android Back         §I reconciler (observe→decide→mutate→validate)
  *   §J lifecycle / observers        §K bootstrap, teardown, exports
+ * Public namespace: globalThis.GMUX (version, inspect, getState,
+ * getCapabilities, reconcile, disable). Local evidence only — no network.
  *
  * Privacy (§48): no network access, no telemetry, no credentials, no repo
  * content. Only versioned UI preferences in localStorage (§39).
@@ -98,8 +107,68 @@ const TARGET = Object.freeze({ SUPPORTED: 'SUPPORTED_TARGET', UNSUPPORTED: 'UNSU
 // Capability values (§12). UNKNOWN must never become false without evidence.
 const CAP = Object.freeze({ DETECTED: 'DETECTED', NOT_DETECTED: 'NOT_DETECTED', UNKNOWN: 'UNKNOWN' });
 
-// Evidence levels (§11).
-const EVIDENCE = Object.freeze({ OBSERVED: 'OBSERVED', INFERRED: 'INFERRED', VALIDATED: 'VALIDATED' });
+// Evidence levels (§11 + inspection-first §13).
+// Core triple OBSERVED/INFERRED/VALIDATED is preserved; the extended set
+// adds UNKNOWN/ATTEMPTED/REGRESSION-TESTED so discovery levels 0–5 can be
+// mapped without collapsing categories (NO EVIDENCE → NO VERIFIED CLAIM).
+const EVIDENCE = Object.freeze({
+  UNKNOWN: 'UNKNOWN',
+  OBSERVED: 'OBSERVED',
+  INFERRED: 'INFERRED',
+  ATTEMPTED: 'ATTEMPTED',
+  VALIDATED: 'VALIDATED',
+  REGRESSION_TESTED: 'REGRESSION-TESTED',
+});
+
+// Discovery confidence levels (inspection-first §12):
+//   0 UNKNOWN — nothing observed yet
+//   1 DETECTED — element exists
+//   2 SEMANTICALLY IDENTIFIED — sufficient semantic evidence
+//   3 INTERACTION ATTEMPTED — operation was attempted
+//   4 STATE TRANSITION OBSERVED — expected resulting state observed
+//   5 REGRESSION-TESTED — repeatable regression coverage
+// Levels MUST NOT be skipped silently; promotion requires evidence.
+const DISCOVERY = Object.freeze({
+  UNKNOWN: 0,
+  DETECTED: 1,
+  IDENTIFIED: 2,
+  ATTEMPTED: 3,
+  TRANSITION_OBSERVED: 4,
+  REGRESSION_TESTED: 5,
+});
+
+// Surface lifecycle states (inspection-first §20).
+const SURFACE_STATE = Object.freeze({
+  UNKNOWN: 'UNKNOWN',
+  DETECTED: 'DETECTED',
+  AVAILABLE: 'AVAILABLE',
+  OPEN: 'OPEN',
+  CLOSING: 'CLOSING',
+  DEGRADED: 'DEGRADED',
+});
+
+// Device orientation (§25). Tracked in layout state so portrait/landscape
+// presentation policy can evolve safely; v0.1 landscape stays simple.
+const ORIENTATION = Object.freeze({ PORTRAIT: 'portrait', LANDSCAPE: 'landscape' });
+
+// Centralized presentation policy (inspection-first §22). No individual
+// surface may invent its own viewport policy. `git` is the presentation key
+// for the `sourceControl` surface (canonical id stays `sourceControl`).
+const LAYOUT_POLICY = Object.freeze({
+  mobile: Object.freeze({ explorer: 'drawer', search: 'fullscreen', git: 'fullscreen', terminal: 'fullscreen', editor: 'immersive' }),
+  compact: Object.freeze({ explorer: 'drawer', search: 'panel', git: 'panel', terminal: 'panel', editor: 'normal' }),
+  desktop: Object.freeze({ explorer: 'native', search: 'native', git: 'native', terminal: 'native', editor: 'native' }),
+});
+
+// Surface contract metadata (inspection-first §21): id/presentation/priority.
+const SURFACE_META = Object.freeze({
+  editor: Object.freeze({ id: 'editor', presentation: 'immersive', priority: 10 }),
+  explorer: Object.freeze({ id: 'explorer', presentation: 'drawer', side: 'left', priority: 50 }),
+  search: Object.freeze({ id: 'search', presentation: 'fullscreen', priority: 90 }),
+  sourceControl: Object.freeze({ id: 'sourceControl', presentation: 'fullscreen', priority: 80 }),
+  terminal: Object.freeze({ id: 'terminal', presentation: 'fullscreen', priority: 70 }),
+  settings: Object.freeze({ id: 'settings', presentation: 'modal', priority: 100 }),
+});
 
 // Feature status vocabulary for diagnostics (§37/§38).
 const FSTATUS = Object.freeze({
@@ -122,10 +191,12 @@ const FEATURES = Object.freeze({
   diagnostics: true,
 });
 
-// Failure taxonomy (§45). Exhaustive for v0.1; failures surface in diagnostics.
+// Failure taxonomy (§45 + inspection-first §17/§48 ADAPTER_DRIFT).
+// Exhaustive for v0.1; failures surface in diagnostics.
 const FAIL = Object.freeze({
   BOOTSTRAP_FAILED: 'BOOTSTRAP_FAILED',
   ADAPTER_NOT_FOUND: 'ADAPTER_NOT_FOUND',
+  ADAPTER_DRIFT: 'ADAPTER_DRIFT',
   APPLICATION_NOT_DETECTED: 'APPLICATION_NOT_DETECTED',
   CAPABILITY_UNKNOWN: 'CAPABILITY_UNKNOWN',
   EDITOR_NOT_DETECTED: 'EDITOR_NOT_DETECTED',
@@ -220,6 +291,98 @@ function modeForWidth(width, breakpoints = DEFAULT_BREAKPOINTS, override = 'auto
   return SHELL_MODE.MOBILE;
 }
 
+/* ------------- orientation / environment / layout (§23–§25) ------------- */
+// Pure and DOM-free: the session observes raw signals (visualViewport,
+// matchMedia, navigator) and normalizes them through these helpers. No
+// user-agent classification is used anywhere (inspection-first §23/§24).
+function orientationFor(width, height) {
+  const w = Number(width) || 0;
+  const h = Number(height) || 0;
+  return w > h ? ORIENTATION.LANDSCAPE : ORIENTATION.PORTRAIT;
+}
+
+// Normalize a raw environment reading into {width,height,coarsePointer,
+// touch,orientation}. Missing signals degrade to recorded unknowns — the
+// layout decision never guesses from absent evidence.
+function observeEnvironment(raw) {
+  const r = raw || {};
+  const width = Math.round(Number(r.width) || 0);
+  const height = Math.round(Number(r.height) || 0);
+  const coarsePointer = typeof r.coarsePointer === 'boolean' ? r.coarsePointer : null;
+  const touch = typeof r.touch === 'boolean' ? r.touch : null;
+  const orientation = r.orientation === ORIENTATION.LANDSCAPE || r.orientation === ORIENTATION.PORTRAIT
+    ? r.orientation
+    : orientationFor(width, height);
+  return { width, height, coarsePointer, touch, orientation };
+}
+
+// Layout decision from the full environment (inspection-first §24):
+// narrow viewport + interaction characteristics + orientation → mode.
+// v0.1 policy: viewport width is the primary signal (centralized policy,
+// same breakpoints as modeForWidth); pointer/touch/orientation are recorded
+// as decision basis so DeX/tablet/desktop-display cases can evolve safely
+// without ever keying on user-agent or on `Android = mobile`.
+function layoutModeFor(environment, breakpoints = DEFAULT_BREAKPOINTS, override = 'auto') {
+  const env = observeEnvironment(environment);
+  const mode = modeForWidth(env.width, breakpoints, override);
+  return {
+    mode,
+    basis: {
+      width: env.width, height: env.height,
+      coarsePointer: env.coarsePointer, touch: env.touch,
+      orientation: env.orientation, override: override || 'auto',
+    },
+  };
+}
+
+/* ---------------- navigation stack (inspection-first §27) ---------------- */
+// Mobile navigation state is independent of browser history. v0.1 depth is
+// [editor] or [editor, secondary]; opening a secondary replaces any previous
+// secondary (["editor","explorer"] → open search → ["editor","search"]).
+function createNavStack() { return [SURFACE.EDITOR]; }
+function navCurrent(stack) {
+  if (!Array.isArray(stack) || !stack.length) return SURFACE.EDITOR;
+  return stack[stack.length - 1];
+}
+function navPush(stack, surface) {
+  const base = Array.isArray(stack) && stack.length ? stack.slice() : createNavStack();
+  if (!surface || surface === SURFACE.EDITOR) return createNavStack();
+  if (surface === SURFACE.SETTINGS) return base; // modal — not navigation
+  return [SURFACE.EDITOR, surface];
+}
+function navPop(stack) {
+  const base = Array.isArray(stack) && stack.length ? stack.slice() : createNavStack();
+  if (base.length <= 1) return createNavStack();
+  base.pop();
+  return base.length ? base : createNavStack();
+}
+
+/* ------------- discovery levels ↔ evidence (§12/§13) -------------------- */
+function discoveryLabel(level) {
+  switch (Number(level)) {
+    case 0: return 'UNKNOWN';
+    case 1: return 'DETECTED';
+    case 2: return 'SEMANTICALLY IDENTIFIED';
+    case 3: return 'INTERACTION ATTEMPTED';
+    case 4: return 'STATE TRANSITION OBSERVED';
+    case 5: return 'REGRESSION-TESTED';
+    default: return 'UNKNOWN';
+  }
+}
+// LEVEL 0 UNKNOWN · 1 OBSERVED · 2 OBSERVED+INFERRED · 3 ATTEMPTED ·
+// 4 VALIDATED · 5 VALIDATED+REGRESSION-TESTED. Element-exists ≠ works.
+function evidenceForDiscovery(level) {
+  switch (Number(level)) {
+    case 0: return [EVIDENCE.UNKNOWN];
+    case 1: return [EVIDENCE.OBSERVED];
+    case 2: return [EVIDENCE.OBSERVED, EVIDENCE.INFERRED];
+    case 3: return [EVIDENCE.ATTEMPTED];
+    case 4: return [EVIDENCE.VALIDATED];
+    case 5: return [EVIDENCE.VALIDATED, EVIDENCE.REGRESSION_TESTED];
+    default: return [EVIDENCE.UNKNOWN];
+  }
+}
+
 /* ---------------------------- state transitions -------------------------- */
 
 const TRANSITIONS = Object.freeze({
@@ -263,6 +426,15 @@ function planBack(ctx) {
   const c = ctx || {};
   if (c.modal) return { consume: 'modal', to: null };
   if (c.quickInputVisible) return { consume: 'quickinput', to: null };
+  // Navigation-stack input (inspection-first §27/§28) wins when present:
+  // a stack deeper than [editor] means the mobile layer owns Back.
+  if (Array.isArray(c.navigationStack) && c.navigationStack.length > 1) {
+    const top = navCurrent(c.navigationStack);
+    if (top && top !== SURFACE.EDITOR && SECONDARY_SURFACES.indexOf(top) !== -1) {
+      const popped = navPop(c.navigationStack);
+      return { consume: 'surface', to: navCurrent(popped) };
+    }
+  }
   const surface = c.activeSurface;
   if (surface && surface !== SURFACE.EDITOR && SECONDARY_SURFACES.indexOf(surface) !== -1) {
     const to = c.previousSurface && c.previousSurface !== surface ? c.previousSurface : SURFACE.EDITOR;
@@ -453,7 +625,10 @@ function planReconcile(input) {
   const notes = [];
 
   const width = st.viewport ? st.viewport.width : 0;
+  const height = st.viewport ? st.viewport.height : 0;
   const shellMode = modeForWidth(width, DEFAULT_BREAKPOINTS, prefs.mode);
+  const orientation = orientationFor(width, height);
+  const layout = LAYOUT_POLICY[shellMode] || LAYOUT_POLICY.mobile;
   const isMobile = shellMode === SHELL_MODE.MOBILE;
   const immersiveOn = !!(FEATURES.immersiveEditor && prefs.immersive && isMobile);
 
@@ -538,13 +713,55 @@ function planReconcile(input) {
 
   const headerFile = activeFile ? activeFile.name || null : null;
 
+  // ---- mobile navigation stack (§27): derived, deterministic -------------
+  // [editor] or [editor, secondary]; settings modals do not push navigation.
+  const prevStack = Array.isArray(st.navigationStack) && st.navigationStack.length
+    ? st.navigationStack.slice() : createNavStack();
+  const navigationStack = activeSurface === SURFACE.SETTINGS
+    ? prevStack
+    : navPush(prevStack, activeSurface);
+
   return {
-    shellMode, isMobile, immersiveOn, activeSurface, previousSurface,
+    shellMode, orientation, layout, isMobile, immersiveOn,
+    activeSurface, previousSurface, navigationStack,
     adoptedFromApp, fileSelected, fileKey,
     shellMinimized, headerFile, terminalEnabled, pressedSurface, bottomBarShown,
     quickInputVisible, drawerActive,
     workbenchAdd, workbenchRemove, rootAdd, rootRemove, vars, notes,
   };
+}
+
+/* ---------------- reducer + state comparison (§35) ----------------------- */
+// planReconcile IS the reducer: (state, observation) → plan. This wrapper
+// exposes the inspection-first §35 signature `reducer(state, observation)`
+// deterministically: identical state/observation inputs always produce the
+// identical next-state fragment. The session uses planReconcile directly for
+// the full plan (vars/classes); reducer() returns the state fragment only.
+function reducer(state, observation) {
+  const st = state || {};
+  const envelope = observation || {};
+  const obs = envelope.obs || envelope;
+  const prefs = envelope.prefs || st.prefs || PREF_DEFAULTS;
+  const caps = envelope.caps || st.capabilities || {};
+  const pending = envelope.pending || null;
+  const plan = planReconcile({ obs, state: st, prefs, caps, pending });
+  return {
+    shellMode: plan.shellMode,
+    orientation: plan.orientation,
+    activeSurface: plan.activeSurface,
+    previousSurface: plan.previousSurface,
+    navigationStack: plan.navigationStack,
+    immersive: plan.immersiveOn,
+  };
+}
+
+// Shallow deterministic comparison for the reconciler convergence check
+// (§35: same desired state → no unnecessary mutation).
+function sameState(a, b) {
+  const keys = ['shellMode', 'orientation', 'activeSurface', 'previousSurface',
+    'navigationStack', 'immersive', 'keyboardVisible', 'viewport', 'capabilities'];
+  const norm = (v) => JSON.stringify(v === undefined ? null : v);
+  return keys.every((k) => norm(a && a[k]) === norm(b && b[k]));
 }
 
 /* --------------------------- feature status map (§38) -------------------- */
@@ -626,6 +843,92 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
     escape: { code: 'Escape', key: 'Escape', keyCode: 27 },
   };
 
+  /* -------- selector registry with provenance (inspection-first §14) ----- */
+  // The registry BEGINS EMPTY. Selectors enter only with provenance after
+  // reconnaissance evidence exists — a selector is evidence, not truth (§60).
+  // Seeds below carry the 2026-09-15 reconnaissance evidence recorded in
+  // docs/dom-evidence.md; every seed stays PROVISIONAL until a live state
+  // transition promotes it (§60/§61 promotion chain).
+  const selectorRegistry = { explorer: [], search: [], sourceControl: [], editor: [], terminal: [] };
+  const SEED_OBSERVED_AT = '2026-09-15';
+  const PROVISIONAL_SEEDS = [
+    { purpose: 'explorer', selector: '.part.activitybar [id="workbench.view.explorer"] .action-label' },
+    { purpose: 'explorer', selector: '.part.activitybar [id="workbench.view.explorer"]' },
+    { purpose: 'search', selector: '.part.activitybar [id="workbench.view.search"] .action-label' },
+    { purpose: 'search', selector: '.part.activitybar [id="workbench.view.search"]' },
+    { purpose: 'sourceControl', selector: '.part.activitybar [id="workbench.view.scm"] .action-label' },
+    { purpose: 'sourceControl', selector: '.part.activitybar [id="workbench.view.scm"]' },
+    { purpose: 'editor', selector: '.monaco-editor textarea.inputarea' },
+    { purpose: 'editor', selector: '.monaco-editor' },
+    { purpose: 'terminal', selector: '.xterm' },
+    { purpose: 'terminal', selector: '.part.panel .terminal-outer-container' },
+  ];
+  let registrySeeded = false;
+  function registerSelector(purpose, selector, provenance) {
+    const list = selectorRegistry[purpose];
+    if (!list || typeof selector !== 'string' || !selector) return null;
+    const exists = list.some((e) => e && e.selector === selector);
+    if (exists) return list.filter((e) => e.selector === selector)[0];
+    const entry = {
+      selector,
+      source: (provenance && provenance.source) || 'reconnaissance',
+      confidence: (provenance && typeof provenance.confidence === 'number') ? provenance.confidence : DISCOVERY.IDENTIFIED,
+      observedAt: (provenance && provenance.observedAt) || new Date().toISOString(),
+      purpose,
+      status: (provenance && provenance.status) || FSTATUS.PROVISIONAL,
+    };
+    list.push(entry);
+    return entry;
+  }
+  function ensureSeeded() {
+    if (registrySeeded) return;
+    registrySeeded = true;
+    PROVISIONAL_SEEDS.forEach((s) => registerSelector(s.purpose, s.selector, {
+      source: 'reconnaissance', confidence: DISCOVERY.IDENTIFIED,
+      observedAt: SEED_OBSERVED_AT, status: FSTATUS.PROVISIONAL,
+    }));
+  }
+  function registrySnapshot() {
+    ensureSeeded();
+    const out = {};
+    Object.keys(selectorRegistry).forEach((k) => { out[k] = selectorRegistry[k].slice(); });
+    return out;
+  }
+
+  // Local selector-use log (inspection-first §16): selector, surface,
+  // discovery level, timestamp, matching count, visibility, interaction
+  // status. Local diagnostic telemetry ONLY — never leaves the device (§49).
+  const selectorLog = [];
+  function recordSelectorUse(entry) {
+    selectorLog.push(Object.assign({ timestamp: new Date().toISOString() }, entry || {}));
+    if (selectorLog.length > 80) selectorLog.splice(0, selectorLog.length - 80);
+  }
+  function getSelectorLog() { return selectorLog.slice(); }
+
+  // Drift tracking (inspection-first §17/§48): remembers whether each
+  // surface's known selectors matched on the previous observation.
+  const lastKnownMatch = { explorer: null, search: null, sourceControl: null, editor: null, terminal: null };
+  const driftEvents = [];
+  function checkDrift(purpose, matchedNow) {
+    const before = lastKnownMatch[purpose];
+    lastKnownMatch[purpose] = !!matchedNow;
+    if (before === true && !matchedNow) {
+      const evt = {
+        code: FAIL.ADAPTER_DRIFT,
+        surface: purpose,
+        expected: 'known selector matched',
+        current: 'no known selector matched',
+        fallback: 'semantic reconnaissance required',
+        timestamp: new Date().toISOString(),
+      };
+      driftEvents.push(evt);
+      if (driftEvents.length > 20) driftEvents.splice(0, driftEvents.length - 20);
+      return evt;
+    }
+    return null;
+  }
+  function getDriftEvents() { return driftEvents.slice(); }
+
   function qs(sel, root) { try { return (root || document).querySelector(sel); } catch (e) { return null; } }
   function qsa(sel, root) {
     try { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); } catch (e) { return []; }
@@ -642,6 +945,204 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
   }
 
   function workbench() { return qs(WB); }
+
+  /* ---------------- resolve + semantic fallback (§15/§18) ---------------- */
+  // resolve() tries known candidates in order. It MUST NOT classify the
+  // result as verified — resolution is observation, not validation.
+  function resolve(candidates, root) {
+    ensureSeeded();
+    const list = Array.isArray(candidates) ? candidates : [];
+    for (let i = 0; i < list.length; i++) {
+      const cand = list[i];
+      const sel = typeof cand === 'string' ? cand : (cand && cand.selector);
+      if (!sel) continue;
+      let element = null;
+      let count = 0;
+      try {
+        element = (root || document).querySelector(sel);
+        try { count = (root || document).querySelectorAll(sel).length; } catch (e) { count = element ? 1 : 0; }
+      } catch (e) { element = null; }
+      if (element) {
+        const evidence = typeof cand === 'string' ? { selector: sel } : cand;
+        recordSelectorUse({
+          selector: sel, surface: (evidence && evidence.purpose) || null,
+          discoveryLevel: (evidence && evidence.confidence) || DISCOVERY.IDENTIFIED,
+          matchingCount: count, visible: isVisible(element), interaction: 'resolved',
+        });
+        return { element, selector: sel, evidence: evidence || null, matchingCount: count };
+      }
+    }
+    return null;
+  }
+
+  // Semantic discovery: scan the activity bar for accessible-name evidence.
+  // A runtime candidate MUST NOT auto-become a permanent selector (§18) —
+  // the caller records evidence first; promotion follows §61 only.
+  function semanticCandidates(viewKey, root) {
+    const scope = root || document;
+    const bar = qs(PARTS.activityBar, scope === document ? undefined : scope);
+    const searchRoot = bar || scope;
+    let labels = [];
+    try {
+      labels = Array.prototype.slice.call(searchRoot.querySelectorAll('.action-label'));
+    } catch (e) { labels = []; }
+    if (!labels.length && !bar) {
+      // Fallback: any aria-labelled control in scope (bounded, no DOM dump).
+      try {
+        labels = Array.prototype.slice.call(scope.querySelectorAll('[aria-label]')).slice(0, 60);
+      } catch (e) { labels = []; }
+    }
+    const prefixes = VIEW_LABELS[viewKey] || [];
+    const out = [];
+    for (let i = 0; i < labels.length; i++) {
+      const element = labels[i];
+      let aria = '';
+      let title = '';
+      try {
+        aria = (element.getAttribute('aria-label') || '').toLowerCase();
+        title = (element.getAttribute('title') || '').toLowerCase();
+      } catch (e) { /* unreadable node — skip */ }
+      for (let p = 0; p < prefixes.length; p++) {
+        if ((aria && aria.indexOf(prefixes[p]) === 0) || (title && title.indexOf(prefixes[p]) === 0)) {
+          out.push({
+            element,
+            evidence: { kind: aria ? 'aria-label' : 'title', value: aria || title, count: 1 },
+          });
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  // Resolution order: known selector → semantic discovery → PROVISIONAL /
+  // BLOCKED. Broken recognition degrades; it never guesses (§45/§46).
+  function resolveSurfaceTarget(surfaceKey, root) {
+    ensureSeeded();
+    const purpose = surfaceKey === 'scm' ? 'sourceControl' : surfaceKey;
+    const known = resolve(selectorRegistry[purpose] || [], root);
+    if (known) return { element: known.element, via: 'known-selector', status: 'MATCHED', evidence: known.evidence };
+    const cands = semanticCandidates(surfaceKey, root);
+    if (cands.length === 1) {
+      recordSelectorUse({
+        selector: '(semantic)', surface: purpose, discoveryLevel: DISCOVERY.IDENTIFIED,
+        matchingCount: 1, visible: isVisible(cands[0].element), interaction: 'provisional-candidate',
+      });
+      return { element: cands[0].element, via: 'semantic', status: 'PROVISIONAL', evidence: cands[0].evidence };
+    }
+    if (cands.length > 1) {
+      // Ambiguous: more than one semantic candidate. Refuse to guess (§56).
+      return { element: null, via: 'semantic', status: 'BLOCKED', evidence: { kind: 'aria-label', value: 'ambiguous', count: cands.length } };
+    }
+    return { element: null, via: 'none', status: 'BLOCKED', evidence: { kind: 'none', value: purpose, count: 0 } };
+  }
+
+  /* ---------------- DOM reconnaissance (inspection-first §9/§10) ---------- */
+  // Inspect first, select second. Bounded scans of semantic signals — ARIA
+  // labels, roles, titles, ids, data attributes, button/input names,
+  // dimensions, visibility — never an indiscriminate full-DOM dump.
+  const RECON_LABEL_CAP = 24;
+  const RECON_NODE_CAP = 600;
+  function safeText(node, maxLen) {
+    try {
+      const t = (node.textContent || '').trim().replace(/\s+/g, ' ');
+      return t.length > maxLen ? t.slice(0, maxLen) : t;
+    } catch (e) { return ''; }
+  }
+  function evidenceForSurface(surface, root) {
+    const scope = root || document;
+    const evidence = [];
+    const count = (sel) => {
+      try { return scope.querySelectorAll(sel).length; } catch (e) { return 0; }
+    };
+    const push = (kind, value, n) => { if (n > 0) evidence.push({ kind, value, count: n }); };
+    if (surface === 'explorer') {
+      push('id', 'workbench.view.explorer', count('[id="workbench.view.explorer"]'));
+      push('aria-label', 'Explorer', count('[aria-label="Explorer"]'));
+      push('class', '.explorer-folders-view', count('.explorer-folders-view'));
+      push('class', '.explorer-view', count('.explorer-view'));
+    } else if (surface === 'search') {
+      push('id', 'workbench.view.search', count('[id="workbench.view.search"]'));
+      push('aria-label', 'Search', count('[aria-label="Search"]'));
+      push('class', '.search-view', count('.search-view'));
+    } else if (surface === 'sourceControl') {
+      push('id', 'workbench.view.scm', count('[id="workbench.view.scm"]'));
+      push('aria-label', 'Source Control', count('[aria-label="Source Control"]'));
+      push('class', '.scm-view', count('.scm-view'));
+    } else if (surface === 'editor') {
+      push('class', '.monaco-editor', count('.monaco-editor'));
+      push('semantic', '.monaco-editor[data-uri]', count('.monaco-editor[data-uri]'));
+    } else if (surface === 'terminal') {
+      push('class', '.xterm', count('.xterm'));
+      push('class', '.terminal-outer-container', count('.terminal-outer-container'));
+    }
+    return { surface, evidence };
+  }
+  function scanReconnaissance(root) {
+    const scope = root || document;
+    const out = {
+      timestamp: new Date().toISOString(),
+      buttons: 0, labelledControls: 0, candidateSurfaces: 0,
+      labels: [], roles: {}, evidence: [],
+    };
+    let buttons = [];
+    let labelled = [];
+    try { buttons = Array.prototype.slice.call(scope.querySelectorAll('button, [role="button"], .action-label')); }
+    catch (e) { buttons = []; }
+    try { labelled = Array.prototype.slice.call(scope.querySelectorAll('[aria-label]')); }
+    catch (e) { labelled = []; }
+    out.buttons = Math.min(buttons.length, RECON_NODE_CAP);
+    out.labelledControls = Math.min(labelled.length, RECON_NODE_CAP);
+    const seen = {};
+    for (let i = 0; i < Math.min(labelled.length, RECON_LABEL_CAP); i++) {
+      const node = labelled[i];
+      let label = '';
+      let role = '';
+      try {
+        label = node.getAttribute('aria-label') || '';
+        role = node.getAttribute('role') || node.tagName || '';
+      } catch (e) { /* skip */ }
+      if (!label || seen[label]) continue;
+      seen[label] = true;
+      out.labels.push({ label: label.slice(0, 80), role: String(role).slice(0, 24) });
+    }
+    const roleNames = ['button', 'tab', 'tree', 'listbox', 'textbox', 'dialog', 'toolbar', 'menu'];
+    roleNames.forEach((r) => {
+      try { out.roles[r] = scope.querySelectorAll(`[role="${r}"]`).length; }
+      catch (e) { out.roles[r] = 0; }
+    });
+    ['explorer', 'search', 'sourceControl', 'editor', 'terminal'].forEach((s) => {
+      const rec = evidenceForSurface(s, scope);
+      out.evidence.push(rec);
+      if (rec.evidence.length) out.candidateSurfaces++;
+    });
+    return out;
+  }
+  const reconnaissance = { scan: scanReconnaissance, evidenceForSurface };
+
+  // Discovery levels 0–2 from a single observation (adapter-side only):
+  // 0 UNKNOWN (no host) · 1 DETECTED (element exists) · 2 IDENTIFIED
+  // (sufficient semantic evidence, e.g. trigger resolvable). Levels 3–5 are
+  // promoted by the session after attempt/transition/regression evidence.
+  function discoveryLevels(obs) {
+    const levels = { explorer: 0, search: 0, sourceControl: 0, editor: 0, terminal: 0 };
+    if (!obs || !obs.application || !obs.application.detected) return levels;
+    const s = obs.surfaces || {};
+    const present = (k) => !!(s[k] && s[k].present);
+    levels.editor = present('editor') ? DISCOVERY.IDENTIFIED : DISCOVERY.UNKNOWN;
+    ['explorer', 'search', 'sourceControl'].forEach((k) => {
+      if (!present(k)) { levels[k] = DISCOVERY.UNKNOWN; return; }
+      const viewKey = k === 'sourceControl' ? 'scm' : k;
+      const trigger = resolveSurfaceTarget(viewKey);
+      levels[k] = trigger.element ? DISCOVERY.IDENTIFIED : DISCOVERY.DETECTED;
+    });
+    if (s.terminal && s.terminal.present) {
+      levels.terminal = DISCOVERY.IDENTIFIED;
+    } else if (s.terminal && s.terminal.hostExpectation === 'likely-unsupported') {
+      levels.terminal = DISCOVERY.UNKNOWN;
+    }
+    return levels;
+  }
 
   /* ----------------------------- observation (§14) ----------------------- */
   function observe() {
@@ -671,7 +1172,11 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
       viewport: { width: window.innerWidth || 0, height: window.innerHeight || 0 },
       route: { url: location.href },
     };
-    if (!wb) return obs;
+    if (!wb) {
+      obs.drift = [];
+      obs.discovery = { explorer: 0, search: 0, sourceControl: 0, editor: 0, terminal: 0 };
+      return obs;
+    }
     const cls = wb.classList;
     const sidebarHidden = cls.contains('nosidebar');
     const panelHidden = cls.contains('nopanel');
@@ -724,6 +1229,30 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
     else if (obs.parts.sideBar.visible && obs.sidebarActiveView) {
       obs.appSurface = obs.sidebarActiveView === 'scm' ? SURFACE.SOURCE_CONTROL : obs.sidebarActiveView;
     } else if (obs.surfaces.editor.present) obs.appSurface = SURFACE.EDITOR;
+    // ---- drift + discovery (inspection-first §16/§17) --------------------
+    // Targeted trigger probes only — no full-DOM scan. A previously matching
+    // trigger that no longer matches emits ADAPTER_DRIFT (§48); the feature
+    // degrades to at most PARTIALLY_VERIFIED until revalidated.
+    obs.drift = [];
+    const triggerMatch = {
+      explorer: !!findActivityAction('explorer'),
+      search: !!findActivityAction('search'),
+      sourceControl: !!findActivityAction('scm'),
+      editor: !!obs.surfaces.editor.present,
+      terminal: !!obs.surfaces.terminal.present,
+    };
+    Object.keys(triggerMatch).forEach((k) => {
+      const evt = checkDrift(k, triggerMatch[k]);
+      if (evt) obs.drift.push(evt);
+    });
+    const levelOf = (present, identified) => (present ? (identified ? DISCOVERY.IDENTIFIED : DISCOVERY.DETECTED) : DISCOVERY.UNKNOWN);
+    obs.discovery = {
+      explorer: levelOf(obs.surfaces.explorer.present, triggerMatch.explorer),
+      search: levelOf(obs.surfaces.search.present, triggerMatch.search),
+      sourceControl: levelOf(obs.surfaces.sourceControl.present, triggerMatch.sourceControl),
+      editor: obs.surfaces.editor.present ? DISCOVERY.IDENTIFIED : DISCOVERY.UNKNOWN,
+      terminal: levelOf(obs.surfaces.terminal.present, triggerMatch.terminal),
+    };
     return obs;
   }
 
@@ -763,21 +1292,55 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
 
   /* ------------------------------ mechanisms ----------------------------- */
   function findActivityAction(viewKey) {
+    // Primary path: known-selector registry → semantic fallback (§18).
+    // Resolution is observation; validation happens after actuation (§10).
+    try {
+      const target = resolveSurfaceTarget(viewKey);
+      if (target && target.element) {
+        const found = target.element;
+        try {
+          if (found.matches && found.matches('.action-label')) return found;
+          if (found.querySelector) {
+            const inner = found.querySelector('.action-label');
+            if (inner) return inner;
+          }
+        } catch (e) { /* structural probe failed — return the node itself */ }
+        return found;
+      }
+      // Ambiguous semantic evidence: refuse to guess (§18/§56). Never fall
+      // through to a first-match heuristic when several candidates exist.
+      if (target && target.status === 'BLOCKED' && target.evidence && target.evidence.count > 1) {
+        return null;
+      }
+    } catch (e) { /* fall through to the direct structural path */ }
+    // Direct structural fallback: same id evidence without the registry's
+    // descendant form, for hosts whose query engine differs.
     const bar = qs(PARTS.activityBar);
     if (!bar) return null;
     const id = VIEW_IDS[viewKey];
     if (id) {
-      const byId = bar.querySelector(`[id="${id}"]`);
-      if (byId) return byId.matches('.action-label') ? byId : (byId.querySelector('.action-label') || byId);
+      let byId = null;
+      try { byId = bar.querySelector(`[id="${id}"]`); } catch (e) { byId = null; }
+      if (byId) {
+        try {
+          if (byId.matches && byId.matches('.action-label')) return byId;
+          const inner = byId.querySelector ? byId.querySelector('.action-label') : null;
+          return inner || byId;
+        } catch (e) { return byId; }
+      }
     }
     const prefixes = VIEW_LABELS[viewKey] || [];
     const candidates = qsa('.action-label', bar);
     for (let i = 0; i < candidates.length; i++) {
       const el = candidates[i];
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-      const title = (el.getAttribute('title') || '').toLowerCase();
+      let aria = '';
+      let title = '';
+      try {
+        aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        title = (el.getAttribute('title') || '').toLowerCase();
+      } catch (e) { continue; }
       for (let p = 0; p < prefixes.length; p++) {
-        if (aria.indexOf(prefixes[p]) === 0 || title.indexOf(prefixes[p]) === 0) return el;
+        if ((aria && aria.indexOf(prefixes[p]) === 0) || (title && title.indexOf(prefixes[p]) === 0)) return el;
       }
     }
     return null;
@@ -953,12 +1516,175 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
     });
   }
 
+  // Focus the Search input after opening Search (inspection-first §31).
+  function focusSearchInput() {
+    const input = qs('.search-view input, .search-view textarea, .search-view [role="textbox"]');
+    if (!input) {
+      return opResult('focus-search-input', false,
+        { elementFound: false, stateChanged: false, level: EVIDENCE.OBSERVED }, FAIL.SEARCH_NOT_DETECTED);
+    }
+    try { input.focus({ preventScroll: true }); }
+    catch (e) { try { input.focus(); } catch (e2) { /* noop */ } }
+    const focused = document.activeElement === input ||
+      (input.contains && document.activeElement && input.contains(document.activeElement));
+    return opResult('focus-search-input', focused, {
+      elementFound: true, stateChanged: focused,
+      level: focused ? EVIDENCE.VALIDATED : EVIDENCE.INFERRED,
+    }, focused ? null : FAIL.COMMAND_FAILED);
+  }
+
+  /* ---------------- Surface abstraction (§19–§21) ------------------------ */
+  // Generic surface contract: id/presentation/priority (SURFACE_META) +
+  // detect/open/close/isOpen/observe. Lifecycle (§20):
+  // UNKNOWN → DETECTED → AVAILABLE → OPEN → CLOSING → AVAILABLE, with
+  // DEGRADED on operation failure. The UI represents DEGRADED (§20).
+  const surfaceStates = {
+    editor: SURFACE_STATE.UNKNOWN, explorer: SURFACE_STATE.UNKNOWN,
+    search: SURFACE_STATE.UNKNOWN, sourceControl: SURFACE_STATE.UNKNOWN,
+    terminal: SURFACE_STATE.UNKNOWN,
+  };
+  function getSurfaceState(id) { return surfaceStates[id] || SURFACE_STATE.UNKNOWN; }
+  function getSurfaceStates() { return Object.assign({}, surfaceStates); }
+  function setSurfaceState(id, st) { if (id in surfaceStates) surfaceStates[id] = st; }
+
+  class Surface {
+    constructor(id) { this.id = id; }
+    detect() { return false; }
+    open() { return { ok: false, reason: 'not-implemented' }; }
+    close() { return { ok: false, reason: 'not-implemented' }; }
+    isOpen() { return false; }
+    observe() { return { present: false, visible: false, state: getSurfaceState(this.id) }; }
+  }
+  class EditorSurface extends Surface {
+    constructor() { super(SURFACE.EDITOR); }
+    detect() {
+      const o = observe();
+      const present = !!(o.surfaces.editor && o.surfaces.editor.present);
+      setSurfaceState(this.id, !present ? SURFACE_STATE.UNKNOWN
+        : (o.surfaces.editor.visible ? SURFACE_STATE.OPEN : SURFACE_STATE.AVAILABLE));
+      return present;
+    }
+    open() {
+      const r = focusEditor();
+      setSurfaceState(this.id, r.ok ? SURFACE_STATE.OPEN : SURFACE_STATE.DEGRADED);
+      return r;
+    }
+    close() {
+      setSurfaceState(this.id, SURFACE_STATE.AVAILABLE);
+      return opResult('close-editor-surface', true, { stateChanged: false, level: EVIDENCE.VALIDATED });
+    }
+    isOpen() { const o = observe(); return !!(o.surfaces.editor && o.surfaces.editor.visible); }
+    observe() {
+      const o = observe();
+      return { present: !!o.surfaces.editor.present, visible: !!o.surfaces.editor.visible, state: getSurfaceState(this.id) };
+    }
+  }
+  function drawerOpenResult(viewKey, surfaceId, r) {
+    if (!r.ok) { setSurfaceState(surfaceId, SURFACE_STATE.DEGRADED); return r; }
+    if (r.evidence && r.evidence.stateChanged) setSurfaceState(surfaceId, SURFACE_STATE.OPEN);
+    else setSurfaceState(surfaceId, SURFACE_STATE.AVAILABLE); // invoked, awaiting validation
+    return r;
+  }
+  function drawerCloseResult(surfaceId, r) {
+    setSurfaceState(surfaceId, SURFACE_STATE.CLOSING);
+    setSurfaceState(surfaceId, r.ok ? SURFACE_STATE.AVAILABLE : SURFACE_STATE.DEGRADED);
+    return r;
+  }
+  class ExplorerSurface extends Surface {
+    constructor() { super(SURFACE.EXPLORER); }
+    detect() {
+      const o = observe();
+      const present = !!(o.surfaces.explorer && o.surfaces.explorer.present);
+      setSurfaceState(this.id, !present ? SURFACE_STATE.UNKNOWN
+        : (o.parts.sideBar.visible && o.sidebarActiveView === 'explorer' ? SURFACE_STATE.OPEN : SURFACE_STATE.AVAILABLE));
+      return present;
+    }
+    open() { return drawerOpenResult('explorer', this.id, openExplorer()); }
+    close() { return drawerCloseResult(this.id, closePanels()); }
+    isOpen() { const o = observe(); return !!(o.parts.sideBar.visible && o.sidebarActiveView === 'explorer'); }
+    observe() {
+      const o = observe();
+      return { present: !!o.surfaces.explorer.present, visible: this.isOpen(), state: getSurfaceState(this.id) };
+    }
+  }
+  class SearchSurface extends Surface {
+    constructor() { super(SURFACE.SEARCH); }
+    detect() {
+      const o = observe();
+      const present = !!(o.surfaces.search && o.surfaces.search.present);
+      setSurfaceState(this.id, !present ? SURFACE_STATE.UNKNOWN
+        : (o.parts.sideBar.visible && o.sidebarActiveView === 'search' ? SURFACE_STATE.OPEN : SURFACE_STATE.AVAILABLE));
+      return present;
+    }
+    open() { return drawerOpenResult('search', this.id, openSearch()); }
+    close() { return drawerCloseResult(this.id, closePanels()); }
+    isOpen() { const o = observe(); return !!(o.parts.sideBar.visible && o.sidebarActiveView === 'search'); }
+    observe() {
+      const o = observe();
+      return { present: !!o.surfaces.search.present, visible: this.isOpen(), state: getSurfaceState(this.id) };
+    }
+  }
+  class GitSurface extends Surface {
+    constructor() { super(SURFACE.SOURCE_CONTROL); }
+    detect() {
+      const o = observe();
+      const present = !!(o.surfaces.sourceControl && o.surfaces.sourceControl.present);
+      setSurfaceState(this.id, !present ? SURFACE_STATE.UNKNOWN
+        : (o.parts.sideBar.visible && o.sidebarActiveView === 'scm' ? SURFACE_STATE.OPEN : SURFACE_STATE.AVAILABLE));
+      return present;
+    }
+    open() { return drawerOpenResult('scm', this.id, openSourceControl()); }
+    close() { return drawerCloseResult(this.id, closePanels()); }
+    isOpen() { const o = observe(); return !!(o.parts.sideBar.visible && o.sidebarActiveView === 'scm'); }
+    observe() {
+      const o = observe();
+      return { present: !!o.surfaces.sourceControl.present, visible: this.isOpen(), state: getSurfaceState(this.id) };
+    }
+  }
+  class TerminalSurface extends Surface {
+    constructor() { super(SURFACE.TERMINAL); }
+    detect() {
+      const o = observe();
+      const present = !!(o.surfaces.terminal && o.surfaces.terminal.present);
+      // Terminal MAY be observed and reported, but operational integration
+      // stays disabled in v0.1 (inspection-first §2 scope freeze).
+      setSurfaceState(this.id, present ? SURFACE_STATE.AVAILABLE : SURFACE_STATE.UNKNOWN);
+      return present;
+    }
+    open() {
+      return opResult('open-terminal', false,
+        { elementFound: false, invoked: false, stateChanged: false, level: EVIDENCE.OBSERVED },
+        'terminal-disabled');
+    }
+    close() {
+      setSurfaceState(this.id, SURFACE_STATE.AVAILABLE);
+      return opResult('close-terminal', true, { stateChanged: false, level: EVIDENCE.VALIDATED });
+    }
+    isOpen() { const o = observe(); return !!(o.surfaces.terminal && o.surfaces.terminal.visible); }
+    observe() {
+      const o = observe();
+      return { present: !!o.surfaces.terminal.present, visible: this.isOpen(), state: getSurfaceState(this.id) };
+    }
+  }
+  const surfaces = {
+    editor: new EditorSurface(),
+    explorer: new ExplorerSurface(),
+    search: new SearchSurface(),
+    sourceControl: new GitSurface(),
+    terminal: new TerminalSurface(),
+  };
+
   return {
     id: ADAPTER_ID,
     version: ADAPTER_VERSION,
     detect, observe, capabilities,
-    focusEditor, openExplorer, openSearch, openSourceControl, closePanels,
+    focusEditor, focusSearchInput, openExplorer, openSearch, openSourceControl, closePanels,
     dismissQuickInput,
+    // inspection-first reconnaissance + selector provenance (§9–§18)
+    reconnaissance, resolve, resolveSurfaceTarget, registerSelector, registrySnapshot,
+    getSelectorLog, getDriftEvents, discoveryLevels,
+    // surface abstraction (§19–§21)
+    Surface, surfaces, getSurfaceState, getSurfaceStates,
     // internal mechanisms (shell/command layer may use as secondary paths)
     workbench, dispatchKeybinding, findActivityAction,
     // host-DOM knowledge the kernel needs as boolean answers (I-02)
@@ -978,9 +1704,13 @@ const GitHubDevAdapter = HAS_DOM ? (function createAdapter() {
 
 const CSS_TEXT = [
   '/* GMUX shell chrome */',
-  `#${ROOT_ID}{position:fixed;inset:0;pointer-events:none;z-index:940;`,
+  // CSS containment (inspection-first §40): treated as an optimization
+  // requiring validation. Fake-DOM smoke + stub runs show no layout
+  // breakage; live-device confirmation remains pending (see report).
+  `#${ROOT_ID}{position:fixed;inset:0;pointer-events:none;z-index:940;contain:layout style;`,
   ' font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.3;',
   ' color:var(--vscode-foreground,#cccccc);}',
+  '.gmux-surface{contain:layout paint;}',
   `#${ROOT_ID} .gmux-button{pointer-events:auto;font:inherit;color:inherit;background:transparent;border:0;padding:0;cursor:pointer;}`,
   `#${ROOT_ID} .gmux-visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}`,
 
@@ -1005,6 +1735,7 @@ const CSS_TEXT = [
   '.gmux-toolbar .gmux-button[aria-pressed="true"]{color:var(--vscode-button-background,#0e639c);}',
   '.gmux-toolbar .gmux-button[aria-pressed="true"]::before{content:"";position:absolute;top:0;left:22%;right:22%;height:2px;background:currentColor;border-radius:0 0 2px 2px;}',
   '.gmux-toolbar .gmux-button[aria-disabled="true"]{opacity:.38;cursor:not-allowed;}',
+  '.gmux-toolbar .gmux-button[data-degraded="true"]{opacity:.55;text-decoration:underline dotted;}',
   `#${ROOT_ID}.gmux-no-footer .gmux-toolbar{display:none;}`,
   `#${ROOT_ID}.gmux-no-header .gmux-header{display:none;}`,
   `#${ROOT_ID}.gmux-shell-minimized .gmux-header{transform:translateY(-110%);}`,
@@ -1072,17 +1803,20 @@ function createSession() {
   const commands = createCommandRegistry(diag);
   const adapter = GitHubDevAdapter;
 
-  /* ----- minimum serializable kernel state (§16) ------------------------- */
+  /* ----- minimum serializable kernel state (§16 + insp. §26) -------------- */
   const state = {
     lifecycle: LIFECYCLE.BOOTSTRAPPING,
     shellMode: SHELL_MODE.MOBILE,
+    orientation: ORIENTATION.PORTRAIT,
     activeSurface: SURFACE.EDITOR,
     previousSurface: null,
+    navigationStack: createNavStack(),
     immersive: true,
     keyboardVisible: false,
     viewport: { width: 0, height: 0, offsetTop: 0 },
+    environment: { coarsePointer: null, touch: null },
     capabilities: {},
-    diagnostics: { reconciliationCount: 0, warnings: [] },
+    diagnostics: { observations: 0, reconciliationCount: 0, warnings: [] },
     // runtime-only handles are kept OUTSIDE state (pending, modal kind).
     modal: null,
     lastFileKey: '',
@@ -1090,10 +1824,17 @@ function createSession() {
 
   let caps = {};
   const stats = {
-    shellMounted: false, observerActive: false, viewportApplied: false,
+    shellMounted: false, observerActive: false, observerRoot: 'body', viewportApplied: false,
     immersiveApplied: false, backHandled: false,
     explorerValidated: false, searchValidated: false, sourceControlValidated: false, terminalValidated: false,
+    driftCount: 0, reconScans: 0,
   };
+  // Last reconnaissance + discovery snapshots (inspection-first §9–§11).
+  // Reconnaissance runs on demand (bootstrap / drift / inspect), never as a
+  // steady-state full-DOM scan (§37/§50).
+  let lastRecon = null;
+  let lastDiscovery = { explorer: 0, search: 0, sourceControl: 0, editor: 0, terminal: 0 };
+  let lastFocusedElement = null;
   let vvUsed = false;
   let pending = null;                 // {cmd, expect, t0, retried}
   let suppress = 0;                  // self-write MutationObserver mask
@@ -1164,6 +1905,8 @@ function createSession() {
     menuBtn.textContent = '\u2630';
     menuBtn.setAttribute('aria-label', 'GMUX menu');
     menuBtn.setAttribute('aria-haspopup', 'true');
+    menuBtn.setAttribute('aria-expanded', 'false');
+    menuBtn.setAttribute('aria-controls', 'gmux-surface-root');
 
     const fileBtn = el('button', 'gmux-button gmux-header-file');
     fileBtn.setAttribute('aria-label', 'Current file — activate to focus the editor');
@@ -1174,6 +1917,8 @@ function createSession() {
     moreBtn.textContent = '\u22EE';
     moreBtn.setAttribute('aria-label', 'Editor actions');
     moreBtn.setAttribute('aria-haspopup', 'true');
+    moreBtn.setAttribute('aria-expanded', 'false');
+    moreBtn.setAttribute('aria-controls', 'gmux-surface-root');
 
     header.appendChild(menuBtn);
     header.appendChild(fileBtn);
@@ -1190,6 +1935,8 @@ function createSession() {
       b.setAttribute('aria-label', def.surface === SURFACE.TERMINAL ? 'Terminal (unavailable on this host)'
         : def.surface === SURFACE.SETTINGS ? 'Settings and diagnostics' : def.label);
       b.setAttribute('aria-pressed', 'false');
+      b.setAttribute('aria-expanded', 'false');
+      b.setAttribute('aria-controls', ROOT_ID);
       const ic = el('span');
       ic.setAttribute('aria-hidden', 'true');
       ic.textContent = def.icon;
@@ -1205,6 +1952,7 @@ function createSession() {
     const live = el('div', 'gmux-visually-hidden');
     live.setAttribute('aria-live', 'polite');
     const surfaceRoot = el('div', 'gmux-surface-root');
+    surfaceRoot.id = 'gmux-surface-root';
 
     root.appendChild(header);
     root.appendChild(toolbar);
@@ -1230,7 +1978,7 @@ function createSession() {
     });
 
     return {
-      root, header, toolbar, fileName, buttons, live, surfaceRoot,
+      root, header, toolbar, fileName, buttons, live, surfaceRoot, menuBtn, moreBtn,
       mount() { applyWrites(() => { document.body.appendChild(root); }); },
       unmount() { if (root.parentNode) applyWrites(() => { root.parentNode.removeChild(root); }); },
     };
@@ -1322,7 +2070,9 @@ function createSession() {
     L.push(`Version: ${USER_INTERFACE_VERSION}`);
     L.push(`Adapter: ${adapter ? adapter.id : 'none'}`);
     L.push(`Mode: ${String(state.shellMode || 'unknown').toUpperCase()}`);
+    L.push(`Orientation: ${state.orientation || ORIENTATION.PORTRAIT}`);
     L.push(`Viewport: ${state.viewport.width} \u00D7 ${state.viewport.height}`);
+    L.push(`Pointer: ${state.environment.coarsePointer === null ? 'unknown' : (state.environment.coarsePointer ? 'coarse' : 'fine')}   Touch: ${state.environment.touch === null ? 'unknown' : (state.environment.touch ? 'yes' : 'no')}`);
     L.push('');
     L.push(`Editor: ${caps.editor || CAP.UNKNOWN}`);
     L.push(`Explorer: ${caps.explorer || CAP.UNKNOWN}`);
@@ -1334,11 +2084,21 @@ function createSession() {
     L.push(`Command palette: ${caps.commandPalette || CAP.UNKNOWN}`);
     L.push('');
     L.push(`Shell: ${stats.shellMounted ? 'ACTIVE' : state.lifecycle}`);
-    L.push(`Observer: ${stats.observerActive ? 'ACTIVE' : 'INACTIVE'}`);
-    L.push(`Reconciliations: ${state.diagnostics.reconciliationCount}`);
+    L.push(`Observer: ${stats.observerActive ? `ACTIVE (${stats.observerRoot || 'body'})` : 'INACTIVE'}`);
+    L.push(`Observations: ${state.diagnostics.observations}   Reconciliations: ${state.diagnostics.reconciliationCount}`);
     L.push(`Keyboard: ${state.keyboardVisible ? 'INFERRED_OPEN' : 'INFERRED_CLOSED'}`);
     L.push(`Immersive: ${p.immersive ? 'ON' : 'OFF'}   Bottom bar: ${p.bottomBar ? 'ON' : 'OFF'}`);
     L.push(`Active surface: ${state.activeSurface}${state.previousSurface ? ` (previous: ${state.previousSurface})` : ''}`);
+    L.push(`Navigation: ${JSON.stringify(state.navigationStack || [SURFACE.EDITOR])}`);
+    L.push(`Discovery: explorer=${lastDiscovery.explorer} search=${lastDiscovery.search} sourceControl=${lastDiscovery.sourceControl} editor=${lastDiscovery.editor} terminal=${lastDiscovery.terminal}`);
+    if (lastRecon) {
+      L.push(`Reconnaissance: buttons=${lastRecon.buttons} labelled=${lastRecon.labelledControls} candidateSurfaces=${lastRecon.candidateSurfaces} scans=${stats.reconScans}`);
+    } else {
+      L.push('Reconnaissance: (no scan yet)');
+    }
+    const drift = adapter && adapter.getDriftEvents ? adapter.getDriftEvents() : [];
+    L.push(`Drift: ${drift.length ? `${drift.length} ADAPTER_DRIFT event(s)` : 'none'}`);
+    drift.slice(-4).forEach((d) => L.push(`- ADAPTER_DRIFT surface=${d.surface} fallback=${d.fallback}`));
     L.push('');
     const warnings = diag.warnings();
     L.push(`Warnings: ${warnings.length ? '' : '(none)'}`);
@@ -1451,6 +2211,9 @@ function createSession() {
   }
 
   function openSurfaceIntent(surface) {
+    // Focus management (§31): remember the opening control so close can
+    // restore focus when the element is still connected.
+    try { lastFocusedElement = document.activeElement || null; } catch (e) { lastFocusedElement = null; }
     if (surface === SURFACE.SETTINGS) { openSettings(); return { ok: true }; }
     if (surface === SURFACE.TERMINAL) {
       if (!FEATURES.terminalSurface) {
@@ -1470,6 +2233,7 @@ function createSession() {
   function beginPending(cmd, expect) {
     state.previousSurface = state.activeSurface;
     state.activeSurface = expect;
+    state.navigationStack = navPush(state.navigationStack, expect);
     pending = { cmd, expect, t0: Date.now(), retried: false };
   }
 
@@ -1523,6 +2287,7 @@ function createSession() {
     if (!r.ok) return { ok: false, code: r.reason || FAIL.EDITOR_NOT_DETECTED, evidence: r.evidence };
     state.previousSurface = state.activeSurface;
     state.activeSurface = SURFACE.EDITOR;
+    state.navigationStack = createNavStack();
     scheduler.markDirty('command');
     return { ok: true, evidence: r.evidence };
   });
@@ -1537,7 +2302,14 @@ function createSession() {
     recordOperation(r, FAIL.COMMAND_FAILED);
     state.previousSurface = null;
     state.activeSurface = target;
+    state.navigationStack = navPop(state.navigationStack);
     pending = { cmd: 'close', expect: SURFACE.EDITOR, t0: Date.now(), retried: false };
+    // Focus restoration (§31): return to the opening control when possible.
+    try {
+      if (lastFocusedElement && lastFocusedElement.isConnected && lastFocusedElement.focus) {
+        lastFocusedElement.focus();
+      }
+    } catch (e) { /* safe fallback: leave focus where the host put it */ }
     scheduler.markDirty('command');
     return { ok: true, evidence: r.evidence };
   });
@@ -1589,6 +2361,24 @@ function createSession() {
       diag.log(FAIL.VIEWPORT_UNAVAILABLE, 'visualViewport missing; window resize fallback used', 'warn');
     }
     state.viewport = { width: Math.round(width), height: Math.round(height), offsetTop: Math.round(offsetTop) };
+    // Interaction characteristics (§23): coarse pointer + touch, observed —
+    // never inferred from user-agent (§24).
+    let coarsePointer = null;
+    try {
+      if (window.matchMedia) coarsePointer = !!window.matchMedia('(pointer: coarse)').matches;
+    } catch (e) { coarsePointer = null; }
+    let touch = null;
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.maxTouchPoints === 'number') {
+        touch = navigator.maxTouchPoints > 0;
+      }
+    } catch (e) { touch = null; }
+    const env = observeEnvironment({
+      width: state.viewport.width, height: state.viewport.height,
+      coarsePointer, touch,
+    });
+    state.orientation = env.orientation;
+    state.environment = { coarsePointer: env.coarsePointer, touch: env.touch };
     const kb = inferKeyboard({
       vvAvailable: !!vv, vvHeight: height, vvWidth: width,
       layoutHeight: window.innerHeight, layoutWidth: window.innerWidth,
@@ -1615,32 +2405,61 @@ function createSession() {
 
   /* ==================== §J MUTATION OBSERVER (§26/§27) =================== */
 
+  // Observation narrowing (inspection-first §37): bootstrap observes the
+  // body; once the workbench root is identified the main observer narrows to
+  // it, while a cheap top-level watcher keeps workbench add/remove visible.
+  // No permanent full-document expensive scan remains in steady state.
+  let moTarget = null;
+  let moRoot = null;
+  function observerCallback(mutations) {
+    if (suppress > 0) return; // mask our own writes
+    let relevant = false;
+    for (let i = 0; i < mutations.length && !relevant; i++) {
+      const m = mutations[i];
+      // "Is this host change relevant?" is adapter knowledge (I-02);
+      // ownership masking is included in the adapter's answer.
+      if (m.type === 'childList') {
+        for (let a = 0; a < m.addedNodes.length && !relevant; a++) relevant = adapter.isRelevantNode(m.addedNodes[a]);
+        for (let r = 0; r < m.removedNodes.length && !relevant; r++) relevant = adapter.isRelevantNode(m.removedNodes[r]);
+      } else if (m.type === 'attributes' && m.target && m.target.nodeType === 1) {
+        relevant = adapter.isRelevantNode(m.target);
+      }
+    }
+    if (relevant) scheduler.markDirty('mutation');
+  }
+  function retargetObserver() {
+    if (!mo) return;
+    let wb = null;
+    try { wb = adapter.workbench(); } catch (e) { wb = null; }
+    const scope = wb ? 'workbench' : 'body';
+    const target = wb || document.body;
+    if (stats.observerRoot === scope && moTarget === target) return;
+    try { mo.disconnect(); } catch (e) { /* noop */ }
+    moTarget = target;
+    try {
+      mo.observe(moTarget, {
+        childList: true, subtree: true,
+        attributes: true, attributeFilter: ['class', 'aria-hidden'],
+        characterData: false,
+      });
+    } catch (e) { /* host without a usable root — keep waiting */ }
+    if (stats.observerRoot !== scope) {
+      stats.observerRoot = scope;
+      diag.log(null, `observer scope: body → ${scope} (§37 narrowing)`, 'info');
+    }
+  }
   function wireObserver() {
     if (!('MutationObserver' in window)) {
       diag.log(FAIL.DOM_CHANGED, 'MutationObserver unavailable; dynamic changes will not reconcile', 'error');
       return;
     }
-    mo = new MutationObserver((mutations) => {
-      if (suppress > 0) return; // mask our own writes
-      let relevant = false;
-      for (let i = 0; i < mutations.length && !relevant; i++) {
-        const m = mutations[i];
-        // "Is this host change relevant?" is adapter knowledge (I-02);
-        // ownership masking is included in the adapter's answer.
-        if (m.type === 'childList') {
-          for (let a = 0; a < m.addedNodes.length && !relevant; a++) relevant = adapter.isRelevantNode(m.addedNodes[a]);
-          for (let r = 0; r < m.removedNodes.length && !relevant; r++) relevant = adapter.isRelevantNode(m.removedNodes[r]);
-        } else if (m.type === 'attributes' && m.target && m.target.nodeType === 1) {
-          relevant = adapter.isRelevantNode(m.target);
-        }
-      }
-      if (relevant) scheduler.markDirty('mutation');
-    });
-    mo.observe(document.body, {
-      childList: true, subtree: true,
-      attributes: true, attributeFilter: ['class', 'aria-hidden'],
-      characterData: false,
-    });
+    mo = new MutationObserver(observerCallback);
+    retargetObserver();
+    // Top-level watcher: catches workbench add/remove even while narrowed.
+    try {
+      moRoot = new MutationObserver(() => { retargetObserver(); scheduler.markDirty('root'); });
+      moRoot.observe(document.body, { childList: true, subtree: false, attributes: false, characterData: false });
+    } catch (e) { moRoot = null; }
     stats.observerActive = true;
   }
 
@@ -1709,6 +2528,7 @@ function createSession() {
       quickInputVisible: !!(popState && popState.quickInputVisible),
       activeSurface: state.activeSurface,
       previousSurface: state.previousSurface,
+      navigationStack: state.navigationStack,
     });
     if (decision.consume === 'modal') {
       closeModal();
@@ -1801,6 +2621,23 @@ function createSession() {
       reconcileShellDuplication();
 
       const obs = adapter.observe();
+      state.diagnostics.observations++;
+      if (obs.discovery) lastDiscovery = Object.assign({}, lastDiscovery, obs.discovery);
+      // Drift: a previously matching known selector that no longer matches
+      // degrades the feature (§48) and triggers a bounded re-scan — the
+      // agent records evidence first instead of guessing (§18).
+      if (obs.drift && obs.drift.length) {
+        obs.drift.forEach((d) => {
+          stats.driftCount++;
+          diag.log(FAIL.ADAPTER_DRIFT,
+            `Surface: ${d.surface} Expected: ${d.expected} Current: ${d.current} Fallback: ${d.fallback}`, 'warn');
+        });
+        try {
+          lastRecon = adapter.reconnaissance.scan();
+          stats.reconScans++;
+        } catch (e) { /* reconnaissance must never break reconciliation */ }
+      }
+      retargetObserver();
       if (dismissingQuickInput && !(obs.parts.quickInput && obs.parts.quickInput.visible)) dismissingQuickInput = false;
 
       const prevCaps = caps;
@@ -1821,6 +2658,11 @@ function createSession() {
           if (pending.expect === SURFACE.SOURCE_CONTROL) stats.sourceControlValidated = true;
           if (pending.expect === SURFACE.TERMINAL) stats.terminalValidated = true;
           diag.log(null, `command effect VALIDATED: ${pending.cmd} → ${pending.expect}`, 'info');
+          // Focus management (§31): opening Search focuses its input once
+          // the surface transition is validated.
+          if (pending.expect === SURFACE.SEARCH && state.shellMode !== SHELL_MODE.DESKTOP) {
+            try { adapter.focusSearchInput(); } catch (e) { /* non-fatal */ }
+          }
           pending = null;
         } else if (verdict.state === 'retry') {
           pending.retried = true;
@@ -1849,7 +2691,9 @@ function createSession() {
       const surfaceChanged = plan.activeSurface !== state.activeSurface;
       state.activeSurface = plan.activeSurface;
       state.previousSurface = plan.previousSurface;
+      state.navigationStack = plan.navigationStack;
       state.shellMode = plan.shellMode;
+      state.orientation = plan.orientation;
       state.immersive = plan.immersiveOn;
       if (plan.fileKey) state.lastFileKey = plan.fileKey;
       if (plan.adoptedFromApp) diag.log(null, `surface adopted from application: ${plan.activeSurface} (OBSERVED)`, 'info');
@@ -1868,16 +2712,24 @@ function createSession() {
         const name = plan.headerFile || '';
         if (shell.fileName.textContent !== name) shell.fileName.textContent = name;
 
+        let surfStates = null;
+        try { surfStates = adapter.getSurfaceStates(); } catch (e) { surfStates = null; }
         SURFACE_BUTTONS.forEach((def) => {
           const b = shell.buttons[def.surface];
           if (!b) return;
           const pressed = plan.pressedSurface === def.surface ||
             (def.surface === SURFACE.SETTINGS && !!state.modal);
           b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+          b.setAttribute('aria-expanded', pressed ? 'true' : 'false');
           if (def.surface === SURFACE.TERMINAL) {
             b.setAttribute('aria-disabled', plan.terminalEnabled ? 'false' : 'true');
           }
+          // DEGRADED surfaces stay visible but honest (§20).
+          const sst = surfStates ? surfStates[def.surface] : null;
+          b.setAttribute('data-degraded', sst === SURFACE_STATE.DEGRADED ? 'true' : 'false');
         });
+        if (shell.menuBtn) shell.menuBtn.setAttribute('aria-expanded', state.modal ? 'true' : 'false');
+        if (shell.moreBtn) shell.moreBtn.setAttribute('aria-expanded', state.modal ? 'true' : 'false');
       });
 
       // ---- Android Back convergence (§34) --------------------------------
@@ -1911,6 +2763,20 @@ function createSession() {
     const firstObs = adapter.observe();
     caps = adapter.capabilities(firstObs);
     state.capabilities = caps;
+    state.navigationStack = createNavStack();
+    if (firstObs.discovery) lastDiscovery = Object.assign({}, lastDiscovery, firstObs.discovery);
+    state.diagnostics.observations++;
+
+    // Inspection-first bootstrap (§9): one bounded reconnaissance scan proves
+    // what the host exposes before any host-specific operation is attempted.
+    try {
+      lastRecon = adapter.reconnaissance.scan();
+      stats.reconScans++;
+      diag.log(null,
+        `reconnaissance: buttons=${lastRecon.buttons} labelled=${lastRecon.labelledControls} candidates=${lastRecon.candidateSurfaces}`, 'info');
+    } catch (e) {
+      diag.log(FAIL.APPLICATION_NOT_DETECTED, 'initial reconnaissance scan failed safely; continuing', 'warn');
+    }
 
     wireViewport();
 
@@ -1989,6 +2855,8 @@ function createSession() {
       while (historyStack.length) { internalPops++; try { window.history.back(); } catch (e) { /* noop */ } historyStack.pop(); }
     }
     if (mo) { mo.disconnect(); mo = null; }
+    if (moRoot) { try { moRoot.disconnect(); } catch (e) { /* noop */ } moRoot = null; }
+    moTarget = null;
     stats.observerActive = false;
     if (bootObserver) { bootObserver.disconnect(); bootObserver = null; }
     if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
@@ -2008,11 +2876,114 @@ function createSession() {
     state.lifecycle = LIFECYCLE.DISABLED;
   }
 
+  /* ============ structured inspection (insp. §11/§42) ===================== */
+  // GMUX.inspect() answers the first-live-run questions (Q1–Q10) from local
+  // evidence only. It returns a structured object AND logs a human-readable
+  // console representation. No network transmission is permitted (§49).
+  function buildInspection() {
+    const p = prefsStore.get();
+    let drift = [];
+    let surfStates = {};
+    let selectorUses = 0;
+    try { drift = adapter.getDriftEvents(); } catch (e) { drift = []; }
+    try { surfStates = adapter.getSurfaceStates(); } catch (e) { surfStates = {}; }
+    try { selectorUses = adapter.getSelectorLog().length; } catch (e) { selectorUses = 0; }
+    return {
+      version: USER_INTERFACE_VERSION,
+      adapter: adapter ? adapter.id : 'none',
+      adapterVersion: adapter ? adapter.version : 'none',
+      mode: state.shellMode,
+      orientation: state.orientation,
+      viewport: Object.assign({}, state.viewport),
+      environment: Object.assign({}, state.environment),
+      host: {
+        githubDev: 'detected',
+        url: (function () { try { return window.location.href; } catch (e) { return '(unknown)'; } })(),
+      },
+      reconnaissance: lastRecon ? {
+        buttons: lastRecon.buttons,
+        labelledControls: lastRecon.labelledControls,
+        candidateSurfaces: lastRecon.candidateSurfaces,
+        scans: stats.reconScans,
+        evidence: lastRecon.evidence,
+      } : { scans: stats.reconScans, evidence: [] },
+      capabilities: Object.assign({}, caps),
+      discovery: Object.assign({}, lastDiscovery),
+      shell: {
+        mounted: stats.shellMounted,
+        toolbar: !!(shell && shell.toolbar),
+        observer: stats.observerActive ? 'ACTIVE' : 'INACTIVE',
+        observerRoot: stats.observerRoot,
+        lifecycle: state.lifecycle,
+      },
+      surfaces: surfStates,
+      state: {
+        activeSurface: state.activeSurface,
+        navigationStack: (state.navigationStack || []).slice(),
+        immersive: p.immersive,
+        keyboardVisible: state.keyboardVisible,
+        modal: state.modal,
+      },
+      evidence: {
+        observations: state.diagnostics.observations,
+        reconciliations: state.diagnostics.reconciliationCount,
+        selectorUses,
+      },
+      drift: drift.slice(),
+      warnings: diag.warnings().map((w) => ({ code: w.code, msg: w.msg })),
+    };
+  }
+  function inspectConsoleText(insp) {
+    const L = [];
+    const capName = (k) => ({
+      editor: 'editor', explorer: 'explorer', search: 'search',
+      sourceControl: 'source-control', terminal: 'terminal',
+    }[k] || k);
+    L.push('GitHub.dev Mobile UX');
+    L.push('────────────────────');
+    L.push(`Version: ${insp.version}  Adapter: ${insp.adapter}  Mode: ${insp.mode}  Orientation: ${insp.orientation}`);
+    L.push(`Viewport: ${insp.viewport.width} × ${insp.viewport.height}`);
+    L.push('');
+    L.push(`Host   github.dev: ${insp.host.githubDev}`);
+    L.push('Reconnaissance');
+    L.push(`  buttons: ${insp.reconnaissance.buttons || 0}   labelled controls: ${insp.reconnaissance.labelledControls || 0}   candidate surfaces: ${insp.reconnaissance.candidateSurfaces || 0}`);
+    L.push('Capabilities');
+    ['editor', 'explorer', 'search', 'sourceControl', 'terminal'].forEach((k) => {
+      const level = insp.discovery ? insp.discovery[k] : 0;
+      L.push(`  ${capName(k).padEnd(15)} ${insp.capabilities[k] || 'UNKNOWN'}  (discovery ${level}: ${discoveryLabel(level)})`);
+    });
+    L.push('Shell');
+    L.push(`  mounted: ${insp.shell.mounted ? 'YES' : 'NO'}   toolbar: ${insp.shell.toolbar ? 'YES' : 'NO'}   observer: ${insp.shell.observer} (${insp.shell.observerRoot})`);
+    L.push('State');
+    L.push(`  surface: ${insp.state.activeSurface}   navigation: ${JSON.stringify(insp.state.navigationStack)}   immersive: ${insp.state.immersive}   keyboard: ${insp.state.keyboardVisible}`);
+    L.push('Evidence');
+    L.push(`  observations: ${insp.evidence.observations}   reconciles: ${insp.evidence.reconciliations}   selector uses: ${insp.evidence.selectorUses}`);
+    L.push(`Drift: ${insp.drift.length ? insp.drift.length + ' event(s)' : 'none'}`);
+    L.push(`Warnings: ${insp.warnings.length ? '' : 'none'}`);
+    insp.warnings.slice(-6).forEach((w) => L.push(`  - ${w.code ? w.code + ': ' : ''}${w.msg}`));
+    return L.join('\n');
+  }
+  function inspect() {
+    // Refresh reconnaissance on demand so inspect() answers Q1–Q10 from a
+    // current bounded scan (never a steady-state scan).
+    try {
+      lastRecon = adapter.reconnaissance.scan();
+      stats.reconScans++;
+    } catch (e) { /* keep the previous snapshot */ }
+    const insp = buildInspection();
+    try {
+      if (typeof console !== 'undefined' && console.info) console.info(inspectConsoleText(insp));
+    } catch (e) { /* console unavailable — structured return still valid */ }
+    return insp;
+  }
+
   return {
     diag, state, stats, commands, prefsStore, scheduler, adapter, dispatch,
     get caps() { return caps; },
     get pending() { return pending; },
-    start, dispose, activate, reconcile, buildReport,
+    start, dispose, activate, reconcile, buildReport, buildInspection, inspect,
+    get lastRecon() { return lastRecon; },
+    get lastDiscovery() { return lastDiscovery; },
     // test/debug helpers
     markDirty: (r) => scheduler.markDirty(r),
   };
@@ -2109,6 +3080,22 @@ if (HAS_DOM) {
       poke: (reason) => { if (session) session.markDirty(reason || 'poke'); },
     };
 
+    // Inspection-first public namespace (insp. §6): exactly one global.
+    // No other helper globals are created. Local evidence only (§49).
+    const GMUX_API = {
+      version: USER_INTERFACE_VERSION,
+      inspect: () => (session ? session.inspect()
+        : { version: USER_INTERFACE_VERSION, status: 'disabled', hint: 'press Alt+Shift+G to re-enable' }),
+      getState: () => (session ? JSON.parse(JSON.stringify(session.state)) : null),
+      getCapabilities: () => (session ? Object.assign({}, session.caps) : {}),
+      reconcile: () => { if (session) session.reconcile(); },
+      disable: () => disableShell(true),
+    };
+    try {
+      globalThis.GMUX = GMUX_API;
+      window.GMUX = GMUX_API;
+    } catch (e) { /* non-writable global — __GMUX__ remains available */ }
+
     // Alt+Shift+G lives outside the session so disable is reversible.
     window.addEventListener('keydown', (ev) => {
       if (ev.altKey && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && (ev.code === 'KeyG' || ev.key === 'g' || ev.key === 'G')) {
@@ -2130,12 +3117,16 @@ const TEST_EXPORTS = {
   NAME, USER_INTERFACE_VERSION, ADAPTER_ID, ADAPTER_VERSION, PREFERENCE_SCHEMA_VERSION,
   SHELL_MODE, SURFACE, LIFECYCLE, TARGET, CAP, EVIDENCE, FSTATUS, FAIL, FEATURES,
   DEFAULT_BREAKPOINTS, PREF_DEFAULTS, ROOT_ID, OWNER_ATTR, OWNER_VALUE,
+  DISCOVERY, SURFACE_STATE, ORIENTATION, LAYOUT_POLICY, SURFACE_META,
   // Adapter exists only when DOM globals are present; used by adapter-flow.mjs.
   __adapter: HAS_DOM ? GitHubDevAdapter : null,
   createDiagLog, detectTarget, createScheduler, modeForWidth, transitionFor, planBack,
   parsePreferences, createPreferenceStore, createCommandRegistry,
   classifyCapabilities, terminalHostExpectation, inferKeyboard, evaluatePending,
   planReconcile, computeFeatureStatuses,
+  orientationFor, observeEnvironment, layoutModeFor,
+  createNavStack, navCurrent, navPush, navPop,
+  discoveryLabel, evidenceForDiscovery, reducer, sameState,
 };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = TEST_EXPORTS;

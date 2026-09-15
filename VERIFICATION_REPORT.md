@@ -12,9 +12,10 @@
   `vscode.dev/github/{owner}/{repo}`; evidence R1 in `docs/dom-evidence.md`)
 - **Primary device class:** Android phones, mobile browsers with a
   userscript-capable manager
-- **Test environment:** headless Node on Linux; three dependency-free
+- **Test environment:** headless Node on Linux; four dependency-free
   suites — 113 pure-kernel checks, 37 fake-DOM lifecycle checks, 50 stub-
-  workbench adapter-operation checks. No live `github.dev` session and no
+  workbench adapter-operation checks, 126 reconnaissance/registry/surface/
+  fixture/mutation checks (326 total). No live `github.dev` session and no
   physical/virtual Android device was available in this environment
 - **Browser:** automated checks use a minimal in-repo fake DOM
   (`tests/dom-smoke.mjs`); live browser matrix = **UNTESTED** (manual recipe
@@ -22,9 +23,15 @@
 - **Device:** no physical device exercised (**UNTESTED**)
 - **Viewport:** automated classification exercised at 320 / 412 / 599 / 600 /
   768 / 1024 / 1025 / 1280 px widths; live visualViewport behavior UNTESTED
-- **Adapter status:** `github-dev@1` — adapter code present, selector targets
-  recorded as OBSERVED/INFERRED in `docs/dom-evidence.md`; **live actuation
-  UNTESTED**, so the adapter is not claimed VALIDATED
+- **Adapter status:** `github-dev@1` — inspection-first adapter present:
+  bounded DOM reconnaissance, empty-start selector registry with provenance,
+  semantic fallback (`PROVISIONAL`/`BLOCKED`, ambiguity refuses to guess),
+  `ADAPTER_DRIFT` detection, and `Editor/Explorer/Search/Git/Terminal`
+  surfaces with the `UNKNOWN→…→OPEN→…` lifecycle (`DEGRADED` on failure).
+  Selector targets recorded as OBSERVED/INFERRED in
+  `docs/dom-evidence.md`, seeded as `PROVISIONAL` with the 2026-09-15
+  reconnaissance provenance; **live actuation UNTESTED**, so the adapter is
+  not claimed VALIDATED and no seed is claimed promoted (§60/§61)
 
 ## How to reproduce
 
@@ -32,7 +39,9 @@
 node tests/run-tests.mjs     # 113 pure-kernel checks
 node tests/dom-smoke.mjs     # 37 fake-DOM lifecycle/idempotence checks
 node tests/adapter-flow.mjs  # 50 stub-workbench structured-operation checks
+node tests/recon-fixtures.mjs # 126 reconnaissance/fixture/mutation checks
 node tests/gates.mjs         # G0–G20 evidence → diagnostics/gate-evidence.json
+node tests/gen-evidence.mjs  # regenerates evidence/*.json (optional set)
 ```
 
 Machine-readable gate records (§51 format) are emitted to
@@ -63,10 +72,10 @@ Selectors without an evidence entry are not used (§58 rule 4).
 
 | Gate | Name | Status | Basis / evidence |
 |---|---|---|---|
-| G0 | Script loads | **PASS** | metadata block parsed; both suites require/load the artifact with zero load errors |
-| G1 | No uncaught exceptions | **PASS** | 113 kernel + 37 smoke + 50 adapter-flow checks complete, exit code 0 |
+| G0 | Script loads | **PASS** | metadata block parsed; all four suites require/load the artifact with zero load errors |
+| G1 | No uncaught exceptions | **PASS** | 113 kernel + 37 smoke + 50 adapter-flow + 126 recon-fixture checks complete, exit code 0 |
 | G2 | github.dev detected | **PASS** | pure, DOM-independent `detectTarget()`: github.dev, `*.github.dev`, `vscode.dev/github/*` supported; `vscode.dev` non-github routes and arbitrary hosts UNSUPPORTED; runs before any DOM mutation (§7) |
-| G3 | Mobile mode detected | **PARTIAL** | centralized breakpoint policy TESTED (`<600 mobile, 600–1024 compact, >1024 desktop` + override); live mobile UA/render UNTESTED |
+| G3 | Mobile mode detected | **PARTIAL** | centralized breakpoint policy TESTED (`<600 mobile, 600–1024 compact, >1024 desktop` + override) plus orientation/environment observation (coarse-pointer, touch, no UA sniffing) and navigation-stack planning TESTED; live mobile render UNTESTED |
 | G4 | Shell appears exactly once | **PASS** | fake-DOM mount: `#github-mobile-ux` count = 1, toolbar = 1, stylesheet = 1; injected rogue root removed and `SHELL_DUPLICATION` emitted; duplicate-eval guard present |
 | G5 | Editor remains usable | **UNTESTED** | design-only evidence: v0.1 installs **no pointer/gesture handlers**; Escape yields inside `.monaco-editor, textarea, input, …`; focus uses Monaco `textarea.inputarea` only; live editable/cursor/selection/clipboard/scroll/keyboard checklist pending (§29/§30) |
 | G6 | Explorer opens | **PARTIAL** | kernel closed loop TESTED (intent → structured result → pending → observe → VALIDATED/expiry); **stub workbench TESTED**: `openExplorer()` returns §9 evidence with `stateChanged:true, level=VALIDATED`; live activity-bar/keybinding actuation UNTESTED |
@@ -81,7 +90,7 @@ Selectors without an evidence entry are not used (§58 rule 4).
 | G15 | Reconciliation is idempotent | **PASS** | 10 scheduled reconciliations over a stable observation: shell/toolbar/button counts unchanged (1/1/1); class/CSS-var writes are diffed; duplicate root converged (§25) |
 | G16 | Preferences survive reload | **PARTIAL** | schema-v1 round trip across a fresh session (disable→enable) TESTED with fake storage; full page reload on live host UNTESTED |
 | G17 | Corrupt preferences do not prevent startup | **PASS** | invalid JSON, foreign schema version, non-object payload, throwing storage: each yields `PREFERENCE_PARSE_FAILED` + defaults + successful boot |
-| G18 | Unsupported capabilities reported | **PASS** | UNKNOWN/NOT_DETECTED never promoted; terminal control rendered `aria-disabled`; stub test with the workbench removed shows all capabilities collapsing to UNKNOWN and `openExplorer()` returning a structured `EXPLORER_NOT_DETECTED` failure (no silent success); feature-status map refuses VERIFIED without validation |
+| G18 | Unsupported capabilities reported | **PASS** | UNKNOWN/NOT_DETECTED never promoted; terminal control rendered `aria-disabled`; stub test with the workbench removed shows all capabilities collapsing to UNKNOWN and `openExplorer()` returning a structured `EXPLORER_NOT_DETECTED` failure (no silent success); feature-status map refuses VERIFIED without validation; recon suite adds 7 minimal fixtures (incl. `missing-explorer` downgrade, `changed-label` PROVISIONAL, `malformed` safety), `ADAPTER_DRIFT` on selector loss, and a 7-mutation matrix proving degraded-never-wrong behavior |
 | G19 | Userscript makes zero network requests | **PASS** | static scan: no `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, dynamic `import`, RTC data channels (`tests/gates.mjs` enforces this) |
 | G20 | Userscript has zero external dependencies | **PASS** | no `@require`/`@resource` directives, no `require()` in artifact, no build step, single file; `@grant none` |
 
@@ -128,7 +137,13 @@ FAIL     0
   VS Code workbench (normalized observation shape, detect/open/close/focus
   structured results with VALIDATED evidence levels, idempotent already-open
   semantics, no-op close semantics, and graceful collapse to UNKNOWN/
-  structured failures when the host disappears).
+  structured failures when the host disappears); and inspection-first
+  behavior (orientation/environment/layout policy, navigation stack, discovery
+  levels 0–5, deterministic reducer, empty-start registry with provenance,
+  resolve-without-verifying, semantic PROVISIONAL/BLOCKED fallback with
+  ambiguity refusal, reconnaissance evidence shape, Surface contracts and
+  lifecycle incl. DEGRADED and disabled terminal, drift events, 7 static
+  fixtures, and the 7-mutation degraded-never-wrong matrix).
 - **Validated (observed expected state transition after an operation):**
   **none on a live host.** Synthetic validation paths prove the state
   machine; they are not claims about github.dev behavior.
@@ -141,7 +156,7 @@ FAIL     0
 
 ## Failures / warnings found during verification
 
-- No failures remain in the automated suites (113 + 37 + 50 checks green).
+- No failures remain in the automated suites (113 + 37 + 50 + 126 checks green).
 - The stub-workbench suite caught and forced a fix for a real artifact defect:
   `observe()` queried `PARTS.statusbar` (undefined key) instead of
   `PARTS.statusBar`, which in a real browser would have thrown inside the
@@ -160,9 +175,12 @@ FAIL     0
 
 1. Live host selectors (activity-bar view IDs, sidebar content classes,
    `.xterm`, `.quick-input-widget`) are OBSERVED/INFERRED from source and a
-   fetched page, not yet VALIDATED interactively. If a target differs, the
-   adapter returns a structured failure and the feature degrades (§46/§47)
-   rather than pretending success.
+   fetched page, seeded as PROVISIONAL with provenance — not yet VALIDATED
+   interactively and not promoted (§60/§61). If a target differs, the
+   adapter returns a structured failure, emits `ADAPTER_DRIFT` where a
+   previously matching selector is lost, attempts one bounded semantic
+   re-discovery, and the feature degrades (§46/§47) rather than pretending
+   success.
 2. Synthetic keybinding dispatch is the secondary mechanism; VS Code key
    handling in mobile browsers may swallow synthesized events.
 3. Android Back layering assumes GMUX-owned history entries are not

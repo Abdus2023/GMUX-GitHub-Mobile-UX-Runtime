@@ -43,8 +43,9 @@ function runSuite(file) {
 const unit = runSuite('run-tests.mjs');
 const smoke = runSuite('dom-smoke.mjs');
 const flow = runSuite('adapter-flow.mjs');
-const unitOk = unit.ok, smokeOk = smoke.ok, flowOk = flow.ok;
-const unitCount = unit.count, smokeCount = smoke.count, flowCount = flow.count;
+const recon = runSuite('recon-fixtures.mjs');
+const unitOk = unit.ok, smokeOk = smoke.ok, flowOk = flow.ok, reconOk = recon.ok;
+const unitCount = unit.count, smokeCount = smoke.count, flowCount = flow.count, reconCount = recon.count;
 
 /* --------------------- 2. static contract scans -------------------------- */
 
@@ -130,14 +131,15 @@ const capPass = (() => {
 
 console.log('\nRelease gate evidence (SPEC §49):');
 
-gate('G0', 'script-loads', unitOk && smokeOk && flowOk && meta.version === K.USER_INTERFACE_VERSION ? 'PASS' : 'FAIL', {
+gate('G0', 'script-loads', unitOk && smokeOk && flowOk && reconOk && meta.version === K.USER_INTERFACE_VERSION ? 'PASS' : 'FAIL', {
   metadata: { name: meta.name, version: meta.version, runAt: meta['run-at'], grant: meta.grant, noframes: meta.noframes },
   unitSuite: { passed: Number(unitCount), zeroFailures: unitOk },
   smokeSuite: { passed: Number(smokeCount), zeroFailures: smokeOk },
   adapterFlowSuite: { passed: Number(flowCount), zeroFailures: flowOk },
+  reconFixturesSuite: { passed: Number(reconCount), zeroFailures: reconOk },
 });
-gate('G1', 'no-uncaught-exceptions', unitOk && smokeOk && flowOk ? 'PASS' : 'FAIL', {
-  automatedSuites: 'all three complete with exit code 0',
+gate('G1', 'no-uncaught-exceptions', unitOk && smokeOk && flowOk && reconOk ? 'PASS' : 'FAIL', {
+  automatedSuites: 'all four complete with exit code 0',
 });
 gate('G2', 'github-dev-detected', hostPass ? 'PASS' : 'FAIL', {
   cases: hostCases.map(([h, p, want]) => ({ hostname: h, pathname: p, expected: want ? 'SUPPORTED_TARGET' : 'UNSUPPORTED_TARGET' })),
@@ -204,12 +206,13 @@ gate('G17', 'corrupt-preferences-do-not-prevent-startup', corruptPrefPass && smo
   cases: ['invalid JSON', 'foreign schema version', 'non-object payload', 'hostile throwing storage'],
   outcome: 'PREFERENCE_PARSE_FAILED emitted, defaults used, boot continues',
 });
-gate('G18', 'unsupported-capabilities-reported', capPass && flowOk ? 'PASS' : 'FAIL', {
+gate('G18', 'unsupported-capabilities-reported', capPass && flowOk && reconOk ? 'PASS' : 'FAIL', {
   capabilityModel: 'DETECTED / NOT_DETECTED / UNKNOWN preserved',
   terminal: 'NOT_DETECTED + feature flag terminalSurface=false; control aria-disabled; diagnostics warn',
   commandPaletteClosed: 'UNKNOWN (never false without evidence)',
   hostRemoval: 'adapter-flow: with the workbench removed all capabilities collapse to UNKNOWN and openExplorer returns a structured EXPLORER_NOT_DETECTED failure rather than a silent success',
   noVerifiedWithoutEvidence: 'feature-status map unit-tested',
+  inspectionFirst: 'recon-fixtures: 7 static fixtures verified minimal/scriptless; 7 DOM mutations degrade with diagnostic evidence (ADAPTER_DRIFT / PROVISIONAL / BLOCKED) and never validate the wrong view; malformed host stays safe',
 });
 gate('G19', 'userscript-makes-zero-network-requests', networkHits.length === 0 ? 'PASS' : 'FAIL', {
   forbiddenPrimitivesScanned: networkTokens.map(([n]) => n),
@@ -240,6 +243,7 @@ const record = {
     kernelUnits: { passed: Number(unitCount), zeroFailures: unitOk },
     domSmoke: { passed: Number(smokeCount), zeroFailures: smokeOk },
     adapterFlow: { passed: Number(flowCount), zeroFailures: flowOk },
+    reconFixtures: { passed: Number(reconCount), zeroFailures: reconOk },
   },
   summary,
   finalStatus,
