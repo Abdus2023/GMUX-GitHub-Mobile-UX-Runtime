@@ -1,0 +1,13 @@
+{
+  "schema": "gmux.fixture/v1",
+  "surface": "terminal",
+  "state": "absent",
+  "elements": [],
+  "provenance": "hand-authored from the \u00a744 candidate vocabulary; EVIDENCE ONLY \u2014 not live-validated. Promote only after Phase B reconnaissance + \u00a749 interaction verification + \u00a754 golden-state pass.",
+  "status": "PROVISIONAL",
+  "verification": "UNVALIDATED_LIVE",
+  "elementFormat": "role + accessible name only; fixtures never carry CSS selectors (\u00a751/\u00a753)",
+  "expectation": "Absence is a valid observation on the web host and is NOT a failure (\u00a768).",
+  "operational": "BLOCKED",
+  "allowedWhen": "only enabled after a verified mapping exists (\u00a726/\u00a764)"
+}

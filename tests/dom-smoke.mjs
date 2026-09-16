@@ -1,311 +1,506 @@
 #!/usr/bin/env node
 /**
- * GMUX DOM smoke test — boots the userscript against a minimal fake DOM.
+ * GMUX v0.1 DOM lifecycle suite — real bootstrap against a miniature DOM.
  *
  * Dependency-free: node tests/dom-smoke.mjs
  *
- * Evidence provided (v0.1 contract):
- *   G0/G1  script loads with no uncaught exception on an empty page;
- *   G2/G3  host detection + mobile classification (pure kernel, via hook);
- *   G4     exactly one shell root, one toolbar, one stylesheet;
- *   I-13   every userscript-created element carries data-gmux-owner;
- *   G12    Android Back history layering opens/closes a modal and otherwise
- *          falls through (ALLOW_BROWSER_DEFAULT);
- *   G15    repeated reconciliation converges — no duplicates;
- *   §21    SHELL_DUPLICATION is emitted and reconciled back to one root;
- *   G17    corrupt preferences do not prevent startup;
- *   §6     disable / re-enable without reload stays idempotent.
+ * Evidence provided here (pack §60): G2 host boundary, G3 failure containment,
+ * G4 shell once, G5 style once, G6 observer once, G7 reconciliation
+ * idempotence, G8 desktop stays usable and untouched, plus the §24/§25/§26
+ * shell contracts, §38 kill switch, §39 Back, §40 history discipline and §37
+ * preference tolerance.
  *
- * Live github.dev interaction still requires the manual matrix
- * (VERIFICATION_REPORT.md); this harness makes no such claim.
+ * This is a harness, not a browser and not github.dev: every claim stays
+ * PARTIALLY_VERIFIED and the runtime is never asserted to work on the host
+ * (pack §60/§67/§68).
  */
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { install, serialize, parseHTML, createDocument, El } from './lib/mini-dom.mjs';
+
+const require = createRequire(import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
+const FILE = join(here, '..', 'github-dev-mobile.user.js');
 
 let passed = 0;
 let failed = 0;
+const failures = [];
 function check(name, cond, detail) {
-  if (cond) passed++;
-  else { failed++; console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
+  if (cond) { passed++; return; }
+  failed++;
+  failures.push(name + (detail ? ` — ${detail}` : ''));
+  console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`);
+}
+function section(t) { console.log(`\n== ${t} ==`); }
+
+const OWNER_SELECTOR = '[data-gmux-owner="github-dev-mobile"][data-gmux-root="true"]';
+
+function loadFresh() {
+  delete require.cache[require.resolve(FILE)];
+  return require(FILE);
 }
 
-/* ------------------------------ fake DOM --------------------------------- */
+async function boot(opts = {}) {
+  const h = install(opts);
+  const K = loadFresh();
+  await h.settle();
+  return { h, K };
+}
 
-const ids = new Map();
-let monacoWorkbenchEl = null;
+const src = readFileSync(FILE, 'utf8');
 
-class FakeElement {
-  constructor(tag) {
-    this.tagName = String(tag || 'div').toUpperCase();
-    this.nodeType = 1;
-    this.children = [];
-    this.parentNode = null;
-    this.attributes = new Map();
-    this.style = {
-      cssText: '',
-      setProperty(k, v) { this[k] = v; },
-      removeProperty(k) { delete this[k]; },
-    };
-    const classes = new Set();
-    this.classList = {
-      add: (...cs) => cs.forEach((c) => classes.add(c)),
-      remove: (...cs) => cs.forEach((c) => classes.delete(c)),
-      contains: (c) => classes.has(c),
-      toggle: (c) => (classes.has(c) ? (classes.delete(c), false) : (classes.add(c), true)),
-    };
-    this.textContent = '';
-    this.id = '';
-    this._listeners = [];
-    Object.defineProperty(this, 'className', {
-      get: () => Array.from(classes).join(' '),
-      set: (v) => { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
-    });
+const HOST_HTML = `<div class="workbench"><div class="sidebar"><ul class="tree"><li>main.rs</li></ul></div>
+<div class="editor"><textarea class="inputarea"></textarea></div><div class="panel"></div></div>`;
+
+/* --------------------------- 1. bootstrap path --------------------------- */
+section('Bootstrap mounts exactly one owned shell (§23/§24)');
+{
+  const { h, K } = await boot({ width: 412, height: 915, touchPoints: 5, coarsePointer: true, hostHTML: HOST_HTML });
+  const roots = h.doc.querySelectorAll(OWNER_SELECTOR);
+  check('exactly one owned root', roots.length === 1, `found ${roots.length}`);
+  check('root id is gmux-root', roots[0].id === 'gmux-root');
+  check('root carries ownership + root markers',
+    roots[0].getAttribute('data-gmux-owner') === 'github-dev-mobile' && roots[0].getAttribute('data-gmux-root') === 'true');
+  const styles = h.doc.querySelectorAll('[data-gmux-style]');
+  check('exactly one style node', styles.length === 1, `found ${styles.length}`);
+  check('style is in head', styles[0].parentNode === h.doc.head);
+  const structure = roots[0].children.map((c) => c.id).join(',');
+  check('§23 structure: header, content, backdrop, drawer, toolbar',
+    structure === 'gmux-header,gmux-content,gmux-backdrop,gmux-drawer,gmux-toolbar', structure);
+  check('toolbar holds exactly the four §26 commands',
+    h.doc.querySelectorAll('#gmux-toolbar .gmux-btn').length === 4);
+  check('command ids use the gmux- prefix',
+    ['gmux-cmd-explorer', 'gmux-cmd-search', 'gmux-cmd-sourceControl', 'gmux-cmd-terminal']
+      .every((id) => !!h.doc.getElementById(id)));
+  check('every generated id is gmux-prefixed',
+    h.doc.querySelectorAll('[id]').every((el) => el.id.startsWith('gmux-')),
+    h.doc.querySelectorAll('[id]').map((e) => e.id).filter((i) => !i.startsWith('gmux-')).join(','));
+  check('GMUX namespace exposes state/adapter/shell/observers',
+    !!K.GMUX.state && !!K.GMUX.adapter && !!K.GMUX.shell && !!K.GMUX.observer && !!K.GMUX.viewportObserver);
+  check('window.GMUX is the one global GMUX creates', h.window.GMUX === K.GMUX);
+  check('no extra globals created on window',
+    Object.keys(h.window).every((k) => !/^__GMUX|GMUX_INTERNALS|__gmux/.test(k)),
+    Object.keys(h.window).filter((k) => /__GMUX|gmuxInternal/i.test(k)).join(','));
+  check('mutation observer is installed once', !!K.GMUX.observer);
+  check('viewport observer listens on visualViewport (§36)', K.GMUX.viewportObserver.target === h.window.visualViewport);
+  check('viewport observer uses passive listeners (§36)', K.GMUX.viewportObserver.listeners.length === 2);
+  check('mode is mobile at 412px (§7)', K.GMUX.state.mode === 'mobile');
+  check('shell is visible on mobile', h.doc.getElementById('gmux-root').hidden === false);
+  check('no polling APIs used', K.log.events.every((e) => !/poll/i.test(e.message)));
+  check('booted state carries a classification, never the raw "auto" preference', K.GMUX.state.mode !== 'auto');
+  check('root carries every rendered attribute',
+    ['mode', 'surface', 'immersive', 'keyboard', 'bottomBar'].every((k) => k in roots[0].dataset),
+    JSON.stringify(roots[0].dataset));
+  check('a created root starts hidden until the first render (§27)',
+    /root\.hidden = true;/.test(src));
+
+  /* ---- 2. §24 idempotent factories under a live DOM ---- */
+  section('Repeated factory calls stay singletons (§24/§28/§35)');
+  const before2 = h.doc.querySelectorAll(OWNER_SELECTOR).length;
+  K.createShell(); K.createShell(); K.createShell();
+  K.createMobileShell();
+  await h.settle();
+  check('4 extra createShell() calls still yield one root',
+    h.doc.querySelectorAll(OWNER_SELECTOR).length === 1 && before2 === 1);
+  K.installStyles(); K.installStyles();
+  check('extra installStyles() calls still yield one node', h.doc.querySelectorAll('[data-gmux-style]').length === 1);
+  const firstObserver = K.GMUX.observer;
+  K.installObserver(); K.installObserver();
+  check('extra installObserver() calls do not replace or add observers', K.GMUX.observer === firstObserver);
+  const vpFirst = K.GMUX.viewportObserver;
+  K.installViewportObserver();
+  check('installViewportObserver is a no-op when already installed', K.GMUX.viewportObserver === vpFirst);
+
+  /* ---- 3. §21 reconciliation idempotence + §22 coalescing ---- */
+  section('Reconciliation is idempotent and converges (§21/§22)');
+  const domBefore = serialize(h.doc.getElementById('gmux-root'));
+  const recBefore = K.GMUX.state.diagnostics.reconciliations;
+  for (let i = 0; i < 25; i++) K.reconcile();
+  await h.settle();
+  check('shell subtree unchanged by repeated reconciliation', serialize(h.doc.getElementById('gmux-root')) === domBefore);
+  check('reconciliations counter advanced', K.GMUX.state.diagnostics.reconciliations >= recBefore + 25);
+  check('still exactly one root after 25 reconciliations', h.doc.querySelectorAll(OWNER_SELECTOR).length === 1);
+  check('still exactly one style node', h.doc.querySelectorAll('[data-gmux-style]').length === 1);
+  check('no duplicate listeners on the Files control',
+    h.doc.getElementById('gmux-cmd-explorer')._listeners.filter(([t]) => t === 'click').length === 1);
+  check('last error stays null under churn', K.GMUX.state.diagnostics.lastError === null);
+
+  // N mutations → ≤ 1 pending reconciliation
+  const beforeCount = K.GMUX.state.diagnostics.reconciliations;
+  for (let i = 0; i < 40; i++) K.dispatch({ type: K.ACTION.IMMERSIVE_TOGGLE });
+  await h.settle(1);
+  const afterOne = K.GMUX.state.diagnostics.reconciliations;
+  check('40 dispatches coalesce into few reconciliations (≤ 2 pending)',
+    afterOne - beforeCount <= 2, `delta=${afterOne - beforeCount}`);
+  check('immersive state is consistent after coalescing', typeof K.GMUX.state.immersive === 'boolean');
+
+  /* ---- 4. §26 capability policy on a revision-0 adapter ---- */
+  section('Controls never pretend (§26)');
+  const explorer = h.doc.getElementById('gmux-cmd-explorer');
+  check('all four commands report BLOCKED capability',
+    ['explorer', 'search', 'sourceControl', 'terminal']
+      .every((s) => h.doc.getElementById(`gmux-cmd-${s}`).dataset.capability === 'BLOCKED'));
+  check('commands are aria-disabled while BLOCKED', explorer.getAttribute('aria-disabled') === 'true');
+  check('the reason is attached to the control', /No verified host mapping/.test(explorer.getAttribute('title') || ''));
+  explorer.click();
+  await h.settle();
+  check('a BLOCKED tap does not commit a surface', K.GMUX.state.surface === 'editor');
+  check('a BLOCKED tap leaves no pending action', K.GMUX.state.pendingAction === null);
+  check('the refusal is surfaced to the user', /BLOCKED/.test(h.doc.getElementById('gmux-reason').textContent));
+  check('nothing was pressed on the host', !/workbench/.test(serialize(h.doc.getElementById('gmux-root'))));
+
+  /* ---- 5. §39/§40 back + navigation ---- */
+  section('Back is a command, history is untouched (§39/§40)');
+  let pushCalls = 0;
+  h.window.history.pushState = () => { pushCalls++; };
+  h.window.history.replaceState = () => { pushCalls++; };
+  h.doc.getElementById('gmux-menu').click();
+  await h.settle();
+  check('diagnostics opens the GMUX window', K.GMUX.state.drawer.kind === 'diagnostics');
+  check('drawer body renders the report', /GMUX 0\.1\.0 · diagnostics/.test(h.doc.getElementById('gmux-drawer-body').textContent));
+  h.fire('keydown', { key: 'Escape' });
+  await h.settle();
+  check('Escape closes diagnostics first', K.GMUX.state.drawer === null);
+  h.fire('keydown', { key: 'Escape' });
+  await h.settle();
+  check('Escape with nothing owned changes nothing', K.GMUX.state.surface === 'editor');
+  const backResult = K.handleBackCommand('test');
+  check('Back is NOT consumed when GMUX owns nothing', backResult.consume === false && backResult.step === 'browser-default');
+  check('no browser history entries created by GMUX', pushCalls === 0);
+  check('nav stack stays [editor]', K.GMUX.state.surface === 'editor');
+
+  /* ---- 6. keyboard heuristic drives presentation only ---- */
+  section('Keyboard heuristic is applied as derived state (§8)');
+  h.window.visualViewport.height = 500;   // innerHeight 915 → Δ415 > 150
+  h.window.visualViewport.dispatchEvent({ type: 'resize' });
+  await h.settle();
+  check('keyboardVisible becomes true', K.GMUX.state.keyboardVisible === true);
+  check('root records the keyboard state', h.doc.getElementById('gmux-root').dataset.keyboard === 'true');
+  h.window.visualViewport.height = 915;
+  h.window.visualViewport.dispatchEvent({ type: 'resize' });
+  await h.settle();
+  check('keyboardVisible returns to false', K.GMUX.state.keyboardVisible === false);
+  check('no scroll/overflow was forced on the host body',
+    !h.doc.body.style._props.size && h.doc.body.className === '', JSON.stringify([...h.doc.body.style._props.entries()]));
+
+  /* ---- 7. host subtree is never rewritten ---- */
+  section('Host subtree is untouched (§3/§30/§31/§32)');
+  const hostBefore = h.doc.body.children.filter((c) => c.getAttribute('data-gmux-owner') !== 'github-dev-mobile').map(serialize).join('');
+  for (const id of ['gmux-cmd-search', 'gmux-cmd-sourceControl', 'gmux-cmd-terminal', 'gmux-menu', 'gmux-immersive', 'gmux-back']) {
+    h.doc.getElementById(id).click();
   }
-  setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === 'id') this.id = String(value); }
-  getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
-  appendChild(child) {
-    if (child.parentNode) child.parentNode.removeChild(child);
-    child.parentNode = this;
-    this.children.push(child);
-    if (child.id) ids.set(child.id, child);
-    return child;
-  }
-  removeChild(child) {
-    const i = this.children.indexOf(child);
-    if (i !== -1) this.children.splice(i, 1);
-    if (child.id && ids.get(child.id) === child) ids.delete(child.id);
-    child.parentNode = null;
-    return child;
-  }
-  addEventListener(type, fn) { this._listeners.push([type, fn]); }
-  removeEventListener(type, fn) { this._listeners = this._listeners.filter(([t, f]) => !(t === type && f === fn)); }
-  dispatchEvent() { return true; }
-  querySelector() { return null; }
-  querySelectorAll() { return []; }
-  matches() { return false; }
-  closest() { return null; }
-  contains(o) { return o === this; }
-  focus() {}
-  getClientRects() { return []; }
-  get offsetHeight() { return 0; }
-  get offsetWidth() { return 0; }
+  h.window.visualViewport.dispatchEvent({ type: 'scroll' });
+  await h.settle(4);
+  const hostAfter = h.doc.body.children.filter((c) => c.getAttribute('data-gmux-owner') !== 'github-dev-mobile').map(serialize).join('');
+  check('host markup identical after a full interaction pass', hostBefore === hostAfter);
+  const wb = h.doc.querySelector('.workbench');
+  check('no class was added to the host workbench', wb.className === 'workbench', wb.className);
+  check('no attribute was added to the host workbench', wb.attrs.size === 1);
+  check('nothing was reparented into the GMUX root', h.doc.getElementById('gmux-root').querySelector('.sidebar,.editor,.panel') === null);
+  check('Monaco textarea untouched', h.doc.querySelector('.inputarea').attrs.size === 1);
+  h.uninstall();
 }
 
-function walk(el, fn) {
-  fn(el);
-  el.children.slice().forEach((c) => walk(c, fn));
+/* ------------------------- 8. desktop stays usable ---------------------- */
+section('Desktop mode leaves the host alone (§27/G8)');
+{
+  const { h, K } = await boot({ width: 1440, height: 900, coarsePointer: false, touchPoints: 0, hostHTML: HOST_HTML });
+  const root = h.doc.getElementById('gmux-root');
+  check('classification is desktop', K.GMUX.state.mode === 'desktop');
+  check('shell root is hidden on desktop', root.hidden === true);
+  check('dataset still reports the mode', root.dataset.mode === 'desktop');
+  // Compare against the same fixture parsed with no GMUX at all: byte-identical
+  // host markup is the §27 promise for desktop ("host presentation minimally
+  // affected" — here: not affected at all).
+  const clean = createDocument({});
+  const parsed = parseHTML(HOST_HTML, clean);
+  while (parsed.children.length) clean.body.appendChild(parsed.children[0]);
+  const cleanHost = clean.body.children.map(serialize).join('');
+  const serializedHost = h.doc.body.children.filter((c) => c !== root).map(serialize).join('');
+  check('host markup byte-identical to the same page without GMUX', serializedHost === cleanHost,
+    `\n  with GMUX: ${serializedHost}\n  without   : ${cleanHost}`);
+  // Stronger, explicit claim: no GMUX interaction is possible while hidden.
+  check('commands remain present but disabled (never pretending)',
+    h.doc.querySelectorAll('#gmux-toolbar .gmux-btn[aria-disabled="true"]').length === 4);
+  check('zero host mutations on desktop', h.doc.querySelectorAll('.workbench [data-gmux-owner]').length === 0);
+  h.uninstall();
 }
-function findAll(el, pred, acc = []) {
-  if (pred(el)) acc.push(el);
-  el.children.forEach((c) => findAll(c, pred, acc));
-  return acc;
-}
-function hasClass(el, cls) { return !!(el && el.classList && el.classList.contains(cls)); }
 
-const body = new FakeElement('body');
-const head = new FakeElement('head');
-const documentElement = new FakeElement('html');
-
-function scanSelector(root, sel) {
-  const out = [];
-  walk(root, (el) => {
-    if (sel.startsWith('#')) { if (el.id === sel.slice(1)) out.push(el); }
-    else if (sel.startsWith('.')) { if (hasClass(el, sel.slice(1))) out.push(el); }
+/* -------------------- 8b. the visibility override, end to end ------------ */
+section('A stored mode override reveals the shell at desktop width (§37)');
+{
+  // This is the documented remedy for "the UI is invisible" on a wide window:
+  // §27/G8 hide the shell on desktop by design, so the frozen §37 `mode`
+  // configuration is the only sanctioned lever. Verified end to end here so
+  // the advice is tested rather than asserted.
+  const forced = await boot({
+    width: 1440, height: 900, coarsePointer: false, touchPoints: 0, hostHTML: HOST_HTML,
+    rawPrefs: JSON.stringify({ version: 1, mode: 'mobile' }),
   });
-  return out;
+  const froot = forced.h.doc.getElementById('gmux-root');
+  check('override wins over viewport classification', forced.K.GMUX.state.mode === 'mobile');
+  check('shell is revealed at 1440px when explicitly configured', froot.hidden === false);
+  const modeField = forced.K.buildReport().fields.find((f) => f.label === 'mode');
+  check('the basis is reported, not silently applied',
+    modeField && modeField.note === 'configuration-override', JSON.stringify(modeField));
+  check('visibility is not capability: commands stay BLOCKED/disabled',
+    forced.h.doc.querySelectorAll('#gmux-toolbar .gmux-btn[aria-disabled="true"]').length === 4);
+  check('no host mutation is caused by the override',
+    forced.h.doc.querySelectorAll('.workbench [data-gmux-owner]').length === 0);
+  check('style node still mounts exactly once',
+    forced.h.doc.querySelectorAll('[data-gmux-style]').length === 1);
+  forced.h.uninstall();
+
+  const pinned = await boot({
+    width: 390, height: 844, coarsePointer: true, touchPoints: 5, hostHTML: HOST_HTML,
+    rawPrefs: JSON.stringify({ version: 1, mode: 'desktop' }),
+  });
+  check('the override forces the hidden direction too', pinned.K.GMUX.state.mode === 'desktop');
+  check('shell stays hidden when configured desktop on a phone viewport',
+    pinned.h.doc.getElementById('gmux-root').hidden === true);
+  pinned.h.uninstall();
 }
 
-const document = {
-  readyState: 'complete',
-  body, head, documentElement,
-  createElement: (tag) => new FakeElement(tag),
-  getElementById: (id) => ids.get(id) || null,
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  querySelector: (sel) => {
-    if (sel === '.monaco-workbench') return monacoWorkbenchEl;
-    if (sel === '.gmux-revive') { const r = scanSelector(body, '.gmux-revive'); return r[0] || null; }
-    if (sel && sel.startsWith('#')) return ids.get(sel.slice(1)) || null;
-    return null;
-  },
-  querySelectorAll: (sel) => {
-    if (sel === '#github-mobile-ux') return scanSelector(body, '#github-mobile-ux');
-    if (sel && sel.startsWith('.')) return scanSelector(body, sel);
-    return [];
-  },
-};
+/* ------------------------------ 9. kill switch --------------------------- */
+section('Kill switch mounts nothing (§38)');
+{
+  const viaQuery = await boot({ href: 'https://github.dev/o/r?gmux=off', hostHTML: HOST_HTML });
+  check('?gmux=off creates no shell', viaQuery.h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  check('?gmux=off creates no style node', viaQuery.h.doc.querySelectorAll('[data-gmux-style]').length === 0);
+  check('?gmux=off installs no observer', viaQuery.K.GMUX.observer === null);
+  check('?gmux=off installs no viewport observer', viaQuery.K.GMUX.viewportObserver === null);
+  check('?gmux=off leaves state unbooted', viaQuery.K.GMUX.state === null);
+  check('?gmux=off mutates the host not at all',
+    serialize(viaQuery.h.doc.body) === serialize(viaQuery.h.doc.querySelector('.workbench').parentNode));
+  viaQuery.h.uninstall();
 
-const storageMap = new Map();
-const listeners = [];
-const historyStates = [];
-const window = {
-  innerWidth: 412,
-  innerHeight: 732,
-  visualViewport: null, // exercises VIEWPORT_UNAVAILABLE fallback path
-  localStorage: {
-    getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
-    setItem: (k, v) => storageMap.set(k, String(v)),
-    removeItem: (k) => storageMap.delete(k),
-  },
-  history: {
-    pushState(s) { historyStates.push(s); },
-    replaceState(s) { if (historyStates.length) historyStates[historyStates.length - 1] = s; else historyStates.push(s); },
-    back() { /* popstate is driven explicitly by the test */ },
-  },
-  requestAnimationFrame: (fn) => setTimeout(() => fn(Date.now()), 0),
-  addEventListener: (type, fn, opts) => listeners.push([type, fn, opts]),
-  removeEventListener: (type, fn) => {
-    const i = listeners.findIndex(([t, f]) => t === type && f === fn);
-    if (i !== -1) listeners.splice(i, 1);
-  },
-  dispatchEvent: () => true,
-  pop(type, ev) { listeners.filter(([t]) => t === type).forEach(([, f]) => f(ev)); },
-  getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
-  KeyboardEvent: class FakeKeyboardEvent { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
-  MutationObserver: class FakeMutationObserver {
-    constructor(cb) { this.cb = cb; observers.push(this); }
-    observe() {}
-    disconnect() { this.disconnected = true; }
-  },
-};
-const fakeLocation = { hostname: 'github.dev', pathname: '/o/r', href: 'https://github.dev/o/r' };
-window.location = fakeLocation;
-window.window = window;
-const observers = [];
+  const viaPref = await boot({ rawPrefs: JSON.stringify({ version: 1, disabled: true }), hostHTML: HOST_HTML });
+  check('preferences.disabled creates no shell', viaPref.h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  check('preferences.disabled creates no style node', viaPref.h.doc.querySelectorAll('[data-gmux-style]').length === 0);
+  check('preferences.disabled installs no observer', viaPref.K.GMUX.observer === null);
+  viaPref.h.uninstall();
 
-globalThis.window = window;
-globalThis.document = document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: { platform: '', userAgent: 'gmux-smoke/node' }, configurable: true,
-});
-Object.defineProperty(globalThis, 'location', { value: fakeLocation, configurable: true });
-globalThis.KeyboardEvent = window.KeyboardEvent;
-globalThis.MutationObserver = window.MutationObserver;
+  const escape = await boot({ rawPrefs: JSON.stringify({ version: 1, disabled: true }), href: 'https://github.dev/o/r?gmux=on' });
+  check('?gmux=on recovers a session disabled by preference', escape.h.doc.querySelectorAll(OWNER_SELECTOR).length === 1);
+  escape.h.uninstall();
 
-/* ------------------------------ boot ------------------------------------- */
+  const deadPref = await boot({ rawPrefs: '{ this is not json', hostHTML: HOST_HTML });
+  check('corrupt preferences still boot the runtime (§37)', deadPref.h.doc.querySelectorAll(OWNER_SELECTOR).length === 1);
+  check('corrupt preferences are reported, not hidden',
+    deadPref.K.log.events.some((e) => /preference-parse-failed/.test(e.detail || '')));
+  deadPref.h.uninstall();
 
-const { createRequire } = await import('node:module');
-const require = createRequire(import.meta.url);
-const K = require('../github-dev-mobile.user.js'); // boot runs on import (readyState=complete)
+  const halfPref = await boot({ rawPrefs: JSON.stringify({ version: 1, mode: 'nonsense', immersive: 'yes', bottomBar: true }), hostHTML: HOST_HTML });
+  check('invalid preference fields fall back to defaults', halfPref.K.GMUX.state.immersive === true);
+  check('invalid mode is reported', halfPref.K.log.events.some((e) => /preference-mode-invalid/.test(e.detail || '')));
+  halfPref.h.uninstall();
+}
 
-await new Promise((r) => setTimeout(r, 30));
+/* --------------------- 9b. preferredSurface preference -------------------- */
+section('preferredSurface is honoured through the evidence path (§37)');
+{
+  const { h, K } = await boot({ rawPrefs: JSON.stringify({ version: 1, preferredSurface: 'explorer' }), hostHTML: HOST_HTML });
+  check('a host preferred surface never commits without verification', K.GMUX.state.surface === 'editor');
+  check('the BLOCKED outcome is reported, not swallowed',
+    K.log.events.some((e) => /preferred surface explorer → BLOCKED/.test(e.message)),
+    JSON.stringify(K.log.events.map((e) => e.message)));
+  check('no host element was activated by the preference', h.doc.querySelector('.workbench').attrs.size === 1);
+  h.uninstall();
 
-check('dev hook exposed', !!window.__GMUX__);
-check('version 0.1.0', window.__GMUX__ && window.__GMUX__.version === '0.1.0');
-check('feature flags frozen into hook', window.__GMUX__.features && window.__GMUX__.features.gestures === false &&
-  window.__GMUX__.features.terminalSurface === false && window.__GMUX__.features.androidBack === true);
+  const gmuxOwned = await boot({ rawPrefs: JSON.stringify({ version: 1, preferredSurface: 'diagnostics' }), hostHTML: HOST_HTML });
+  check('a GMUX-owned preferred surface opens immediately', gmuxOwned.K.GMUX.state.drawer.kind === 'diagnostics');
+  check('and mounts the diagnostics report', /diagnostics/.test(gmuxOwned.h.doc.getElementById('gmux-drawer-body').textContent));
+  gmuxOwned.h.uninstall();
 
-// Host detection is DOM-independent (§7).
-check('G2 detectTarget supports github.dev', K.detectTarget({ hostname: 'github.dev', pathname: '/x' }) === 'SUPPORTED_TARGET');
-check('G2 detectTarget rejects arbitrary site', K.detectTarget({ hostname: 'evil.example', pathname: '/' }) === 'UNSUPPORTED_TARGET');
-check('G3 412px classifies mobile', K.modeForWidth(412) === 'mobile');
+  const none = await boot({ hostHTML: HOST_HTML });
+  check('default editor preference opens nothing', none.K.GMUX.state.drawer === null);
+  none.h.uninstall();
+}
 
-const st0 = window.__GMUX__.state();
-check('parks WAITING_FOR_APP with no workbench', st0 && st0.lifecycle === 'WAITING_FOR_APP');
-check('no shell before app detection', document.getElementById('github-mobile-ux') === null);
-check('diagnostics available while waiting', String(window.__GMUX__.diagnostics()).includes('GitHub.dev Mobile UX'));
+/* --------------------------- 10. host boundary --------------------------- */
+section('Only github.dev is touched (§59/G2)');
+for (const hostname of ['github.com', 'vscode.dev', 'gist.github.com', 'example.com', 'localhost']) {
+  const { h, K } = await boot({ hostname, href: `https://${hostname}/o/r` });
+  check(`${hostname}: no shell`, h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  check(`${hostname}: no style node`, h.doc.querySelectorAll('[data-gmux-style]').length === 0);
+  check(`${hostname}: no observers`, !K.GMUX.observer && !K.GMUX.viewportObserver);
+  h.uninstall();
+}
 
-/* ---------------------- dynamic app render (G4) -------------------------- */
+/* ----------------------- 11. failure containment ------------------------- */
+section('GMUX failures never reach the host (§59/G3)');
+{
+  const h = install({});
+  // Hostile page: appendChild throws, as a locked-down or detached DOM would.
+  const originalAppend = El.prototype.appendChild;
+  El.prototype.appendChild = function () { throw new Error('host rejected the append'); };
+  let threw = null;
+  let K = null;
+  try {
+    delete require.cache[require.resolve(FILE)];
+    K = require(FILE);
+  } catch (e) {
+    threw = e;
+  }
+  El.prototype.appendChild = originalAppend;
+  check('a throwing host does not surface an exception', threw === null, String(threw));
+  check('the failure is recorded as a diagnostic', K.log.events.some((e) => /bootstrap failed/.test(e.message)));
+  check('the host page keeps its own DOM', h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  h.uninstall();
+}
+{
+  // Reconcile must not throw even when the adapter misbehaves.
+  const { h, K } = await boot({ hostHTML: HOST_HTML });
+  const good = K.GMUX.adapter;
+  K.__setAdapter({ id: 'broken', revision: 9, detectEnvironment: () => true, observe: () => { throw new Error('adapter exploded'); } });
+  // Production path: host mutation → scheduleReconcile → contained try/catch (§22).
+  h.doc.querySelector('.workbench').appendChild(h.doc.createElement('div'));
+  let escaped = false;
+  try { await h.settle(2); } catch (e) { escaped = true; }
+  check('a throwing adapter never escapes into the host', escaped === false);
+  check('the failure is recorded as a diagnostic', K.GMUX.state.diagnostics.lastError !== null,
+    String(K.GMUX.state.diagnostics.lastError));
+  check('the shell survives an adapter failure', !!h.doc.getElementById('gmux-toolbar'));
+  check('the host keeps its own DOM after the failure', !!h.doc.querySelector('.workbench div'));
+  K.__setAdapter(good);
+  const errorsBefore = K.log.errors;
+  let recoveryThrew = false;
+  try { K.reconcile(); } catch (e) { recoveryThrew = true; }
+  check('recovery with a working adapter does not throw', recoveryThrew === false);
+  check('recovery adds no new error', K.log.errors === errorsBefore);
+  // lastError is the historical record ("last error", §58), not a live flag, so
+  // it intentionally survives recovery.
+  check('lastError remains auditable after recovery', /adapter exploded/.test(String(K.GMUX.state.diagnostics.lastError)));
+  check('shell still mounts after recovery', !!h.doc.getElementById('gmux-root'));
+  h.uninstall();
+}
 
-monacoWorkbenchEl = new FakeElement('div');
-monacoWorkbenchEl.classList.add('monaco-workbench');
-observers.filter((o) => !o.disconnected).forEach((o) => o.cb && o.cb([]));
-await new Promise((r) => setTimeout(r, 40));
+/* --------------------------- 12. DISABLE teardown ------------------------ */
+section('DISABLE tears down cleanly and persists (§10/§38)');
+{
+  const { h, K } = await boot({ hostHTML: HOST_HTML });
+  const hostSnapshot = h.doc.body.children.filter((c) => c.getAttribute('data-gmux-owner') !== 'github-dev-mobile').map(serialize).join('');
+  K.dispatch({ type: K.ACTION.DISABLE });
+  await h.settle();
+  check('shell removed', h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  check('style node removed', h.doc.querySelectorAll('[data-gmux-style]').length === 0);
+  check('observer released', K.GMUX.observer === null && K.GMUX.viewportObserver === null);
+  check('host markup survives teardown',
+    h.doc.body.children.filter((c) => c.getAttribute('data-gmux-owner') !== 'github-dev-mobile').map(serialize).join('') === hostSnapshot);
+  const stored = JSON.parse(h.window.localStorage.getItem('github-dev-mobile:v1'));
+  check('disable persisted to preferences', stored.disabled === true);
+  K.reconcile();
+  await h.settle();
+  check('reconcile after disable mounts nothing', h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  h.uninstall();
 
-const st1 = window.__GMUX__.state();
-check('bare workbench -> DEGRADED (no false editor claim)', st1 && st1.lifecycle === 'DEGRADED');
-const root = document.getElementById('github-mobile-ux');
-check('shell mounted with contract id', root && root.id === 'github-mobile-ux');
-check('shell root ownership marker (§19/§20)', root && root.getAttribute('data-gmux-owner') === 'github-dev-mobile');
-check('scoped stylesheet installed once', !!document.getElementById('gmux-style'));
+  // And the persisted switch is honoured on the next load.
+  const h2 = install({ rawPrefs: JSON.stringify({ version: 1, disabled: true }), hostHTML: HOST_HTML });
+  const K2 = loadFresh();
+  await h2.settle();
+  check('next boot stays off', h2.doc.querySelectorAll(OWNER_SELECTOR).length === 0 && !K2.GMUX.observer);
+  h2.uninstall();
+}
 
-// Every userscript-created node under the root must be ownership-marked (I-13).
-let unowned = 0;
-walk(root, (n) => { if (n.getAttribute('data-gmux-owner') !== 'github-dev-mobile') unowned++; });
-check('all shell elements carry data-gmux-owner', unowned === 0, `${unowned} unowned nodes`);
-// Stylesheet node is owned too.
-check('stylesheet element carries ownership marker', document.getElementById('gmux-style').getAttribute('data-gmux-owner') === 'github-dev-mobile');
+/* ---------------------- 13. preference round-trip ------------------------ */
+section('Immersive toggle persists as configuration (§37)');
+{
+  const { h, K } = await boot({ hostHTML: HOST_HTML });
+  const immersive = h.doc.getElementById('gmux-immersive');
+  const before = K.GMUX.state.immersive;
+  immersive.click();
+  await h.settle();
+  check('state flipped', K.GMUX.state.immersive !== before);
+  check('root reflects immersive via attribute', h.doc.getElementById('gmux-root').dataset.immersive === String(K.GMUX.state.immersive));
+  const stored = JSON.parse(h.window.localStorage.getItem('github-dev-mobile:v1'));
+  check('preference written under the frozen key', stored.immersive === K.GMUX.state.immersive);
+  check('control created once — same node after reconcile', h.doc.getElementById('gmux-immersive') === immersive);
+  h.uninstall();
+}
 
-const toolbars = findAll(root, (n) => hasClass(n, 'gmux-toolbar'));
-check('exactly one toolbar', toolbars.length === 1);
-const toolbarButtons = toolbars[0] ? toolbars[0].children.filter((n) => n.tagName === 'BUTTON') : [];
-check('five command-bar buttons', toolbarButtons.length === 5);
-const termBtn = toolbarButtons.find((b) => b.getAttribute('data-surface') === 'terminal');
-check('terminal control disabled by default (§17)', termBtn && termBtn.getAttribute('aria-disabled') === 'true');
+/* --------------------- 14. ownership of generated CSS ------------------- */
+section('Style hygiene (§28/§33/§34)');
+{
+  const { h } = await boot({ hostHTML: HOST_HTML });
+  const css = h.doc.querySelector('[data-gmux-style]').textContent;
+  check('all rules are scoped to the owner or gmux ids',
+    css.split('}').every((block) => !block.trim() || /data-gmux-owner|#gmux-|\.gmux-|@media/.test(block)),
+    css.split('}').filter((b) => b.trim() && !/data-gmux-owner|#gmux-|\.gmux-|@media/.test(b)).join(' | '));
+  check('no !important in generated CSS', !/!important/.test(css));
+  check('no universal selector in generated CSS', !/(^|[,\s])\*\s*[,{]/.test(css));
+  check('safe-area insets used', ['top', 'right', 'bottom', 'left'].every((s) => css.includes(`env(safe-area-inset-${s},0px)`)));
+  const flat = css.replace(/\s*\n\s*/g, ' ');
+  check('safe-area values are aliased to custom properties',
+    /--gmux-inset-bottom:env\(safe-area-inset-bottom,0px\)/.test(flat));
+  check('bottom toolbar accounts for the bottom inset',
+    /#gmux-toolbar\{[^}]*var\(--gmux-inset-bottom\)/.test(flat), flat.slice(flat.indexOf('#gmux-toolbar'), flat.indexOf('#gmux-toolbar') + 200));
+  check('header accounts for the top inset',
+    /#gmux-header\{[^}]*var\(--gmux-inset-left\)/.test(flat));
+  check('touch target of 44px is applied', /min-height:44px/.test(css) && /min-width:44px/.test(css));
+  check('only GMUX-owned content scrolls',
+    /\.gmux-drawer-body\{[^}]*overflow-y:auto/.test(flat));
+  const selectors = flat.split('}').map((block) => block.split('{')[0].trim()).filter(Boolean);
+  check('no rule targets host structure (every selector is gmux-scoped)',
+    selectors.every((sel) => /data-gmux-owner|#gmux-|\.gmux-|@media/.test(sel)),
+    selectors.filter((sel) => !/data-gmux-owner|#gmux-|\.gmux-|@media/.test(sel)).join(' | '));
+  check('no bare body/html rule (§32 scroll ownership)',
+    !selectors.some((sel) => /(^|[,{\s])(body|html)(\s*\{|,|$)/.test(sel + '{')),
+    selectors.join(' | '));
+  // §32: the shell background owns no scrolling and clips nothing — clipping is
+  // confined to GMUX's own drawer, and the root stays pass-through.
+  const rootRule = (flat.match(/#gmux-root\{[^}]*\}/) || [''])[0];
+  check('#gmux-root sets no overflow and no host-affecting positioning', rootRule && !/overflow/.test(rootRule), rootRule);
+  check('overflow rules only appear inside gmux-scoped blocks',
+    flat.split('}').every((block) => {
+      const sel = block.split('{')[0];
+      return !/overflow(?!-x:visible)/.test(block) || /#gmux-|\.gmux-/.test(sel);
+    }));
+  h.uninstall();
+}
 
-/* --------------------- reconciliation idempotence (G15) ------------------ */
+/* ------------------- 15. shell survives host DOM churn ----------------- */
+section('Host churn re-observes without duplicating (§35)');
+{
+  const { h, K } = await boot({ hostHTML: HOST_HTML });
+  const obsBefore = K.GMUX.state.diagnostics.observations;
+  const wb = h.doc.querySelector('.workbench');
+  for (let i = 0; i < 30; i++) {
+    const node = h.doc.createElement('div');
+    node.setAttribute('data-probe', String(i));
+    wb.appendChild(node);
+  }
+  await h.settle(3);
+  check('observations counter grew from host mutations', K.GMUX.state.diagnostics.observations > obsBefore);
+  check('mutation volume was measured (§35 narrowing evidence)', K.mutationVolume.total >= 30);
+  check('peak batch recorded', K.mutationVolume.maxBatch >= 1);
+  check('still exactly one root after churn', h.doc.querySelectorAll(OWNER_SELECTOR).length === 1);
+  check('shell subtree unchanged by churn', !!h.doc.getElementById('gmux-toolbar'));
+  check('no GMUX nodes leaked into the host subtree', h.doc.querySelector('.workbench [data-gmux-owner]') === null);
+  h.uninstall();
+}
 
-for (let i = 0; i < 10; i++) { window.__GMUX__.poke ? window.__GMUX__.poke('smoke') : null; await new Promise((r) => setTimeout(r, 5)); }
-const rootsAfter = document.querySelectorAll('#github-mobile-ux');
-const toolbarsAfter = findAll(root, (n) => hasClass(n, 'gmux-toolbar'));
-check('G15 one shell after 10 reconciliations', rootsAfter.length === 1, `roots=${rootsAfter.length}`);
-check('G15 one toolbar after 10 reconciliations', toolbarsAfter.length === 1);
-check('G15 no duplicate buttons', findAll(root, (n) => n.getAttribute && n.getAttribute('data-surface') === 'explorer').length === 1);
-const stAfter = window.__GMUX__.state();
-check('G15 reconciliation counter advanced', stAfter.diagnostics.reconciliationCount >= 10);
+/* --------------------------- 16. empty <body> --------------------------- */
+section('Degradation without a usable body (§59)');
+{
+  const doc = createDocument({});
+  const noBodyDoc = doc;
+  noBodyDoc.body = null;
+  const h = install({});
+  h.doc.body = null;
+  let threw = null;
+  let K = null;
+  try { K = loadFresh(); } catch (e) { threw = e; }
+  check('no exception without a body', threw === null, String(threw));
+  check('no shell created without a body', h.doc.querySelectorAll(OWNER_SELECTOR).length === 0);
+  check('no observer without a body', K.GMUX.observer === null);
+  h.uninstall();
+}
 
-/* -------------------- SHELL_DUPLICATION converges (§21) ------------------ */
-
-const rogue = new FakeElement('div');
-rogue.id = 'github-mobile-ux';
-rogue.setAttribute('data-gmux-owner', 'github-dev-mobile');
-body.appendChild(rogue);
-window.__GMUX__.poke('duplication-test');
-await new Promise((r) => setTimeout(r, 20));
-check('duplicate shell reconciled to exactly one', document.querySelectorAll('#github-mobile-ux').length === 1);
-check('SHELL_DUPLICATION observable in diagnostics', String(window.__GMUX__.diagnostics()).includes('SHELL_DUPLICATION'));
-
-/* ----------------------- Android Back layering (G12) --------------------- */
-
-// Open a GMUX modal surface: a history entry must be pushed (never a trap).
-window.__GMUX__.dispatch({ type: 'OPEN_SETTINGS' });
-await new Promise((r) => setTimeout(r, 20));
-check('opening modal pushes an owned history entry', historyStates.some((s) => s && s.gmux === true && s.kind === 'modal'));
-check('modal DOM present', findAll(root, (n) => hasClass(n, 'gmux-surface')).length === 1);
-let modalOwned = 0;
-findAll(root, (n) => hasClass(n, 'gmux-surface-backdrop')).forEach((bd) => walk(bd, (n) => { if (n.getAttribute('data-gmux-owner') !== 'github-dev-mobile') modalOwned++; }));
-check('modal elements ownership-marked', modalOwned === 0);
-
-// Hardware Back (popstate with our marker) closes the modal.
-window.pop('popstate', { state: { gmux: true, kind: 'modal' } });
-await new Promise((r) => setTimeout(r, 20));
-check('G12 back closes modal', findAll(root, (n) => hasClass(n, 'gmux-surface')).length === 0);
-
-// Back at the editor with nothing owned -> ALLOW_BROWSER_DEFAULT (no throw,
-// no owned UI consumed, no trap).
-window.pop('popstate', { state: null });
-await new Promise((r) => setTimeout(r, 10));
-check('G12 unowned back falls through (editor untouched)',
-  window.__GMUX__.state().activeSurface === 'editor' &&
-  findAll(root, (n) => hasClass(n, 'gmux-surface')).length === 0);
-
-/* ---------------------- preferences (G16/G17) ---------------------------- */
-
-// G16: a preference change persists across disable/enable (same storage).
-window.__GMUX__.dispatch({ type: 'TOGGLE_PREF', key: 'immersive', value: false });
-await new Promise((r) => setTimeout(r, 10));
-let stored = JSON.parse(storageMap.get('gmux:prefs:v1'));
-check('G16 preference persisted', stored && stored.immersive === false);
-
-// G17: corrupt storage must not prevent startup.
-storageMap.set('gmux:prefs:v1', '{corrupt-json');
-window.__GMUX__.disable();
-await new Promise((r) => setTimeout(r, 10));
-check('revive chip mounted on disable', !!document.querySelector('.gmux-revive'));
-check('revive chip ownership-marked', document.querySelector('.gmux-revive').getAttribute('data-gmux-owner') === 'github-dev-mobile');
-window.__GMUX__.enable();
-await new Promise((r) => setTimeout(r, 30));
-let booted = false;
-try { booted = !!window.__GMUX__.state(); } catch (e) { booted = false; }
-check('G17 boots despite corrupt preferences', booted);
-check('G17 PREFERENCE_PARSE_FAILED reported', String(window.__GMUX__.diagnostics()).includes('PREFERENCE_PARSE_FAILED'));
-// Corrupt value is never rewritten until the next valid preference write;
-// the report shows the default posture (immersive ON) despite bad storage.
-check('G17 default posture after corrupt storage', /Immersive: ON/.test(String(window.__GMUX__.diagnostics())));
-void stored;
-
-/* --------------------------- unsupported host ---------------------------- */
-check('adapter id is github-dev', window.__GMUX__.adapterId === 'github-dev');
-check('terminal honestly reported in diagnostics', /Terminal: (NOT_DETECTED|UNKNOWN)/.test(String(window.__GMUX__.diagnostics())));
-
-/* ------------------------------- summary --------------------------------- */
+/* ------------------------------- summary -------------------------------- */
 console.log(`\ndom-smoke: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+if (failed) {
+  console.error('failures:\n' + failures.map((f) => `  - ${f}`).join('\n'));
+  process.exitCode = 1;
+}

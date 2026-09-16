@@ -1,0 +1,46 @@
+{
+  "schema": "gmux.fixture/v1",
+  "surface": "layout",
+  "state": "mobile",
+  "elements": [
+    {
+      "role": "toolbar",
+      "name": "Activity Bar",
+      "visible": true
+    },
+    {
+      "role": "presentation",
+      "name": "Editor Area",
+      "visible": true
+    },
+    {
+      "role": "toolbar",
+      "name": "Status Bar",
+      "visible": true
+    },
+    {
+      "role": "complementary",
+      "name": "Side Bar",
+      "visible": true
+    }
+  ],
+  "provenance": "hand-authored from the \u00a744 candidate vocabulary; EVIDENCE ONLY \u2014 not live-validated. Promote only after Phase B reconnaissance + \u00a749 interaction verification + \u00a754 golden-state pass.",
+  "status": "PROVISIONAL",
+  "verification": "UNVALIDATED_LIVE",
+  "elementFormat": "role + accessible name only; fixtures never carry CSS selectors (\u00a751/\u00a753)",
+  "viewport": {
+    "width": 412,
+    "height": 915,
+    "orientation": "portrait",
+    "coarsePointer": true,
+    "touchPoints": 5
+  },
+  "drawerStrategy": "CSS positioning first; reparenting host nodes is not part of v0.1 (\u00a730)",
+  "scrollOwnership": {
+    "editor": "host",
+    "explorer": "host",
+    "search": "host",
+    "diagnostics": "gmux",
+    "shellBackground": "none"
+  }
+}

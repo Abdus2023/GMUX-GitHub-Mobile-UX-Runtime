@@ -1,0 +1,23 @@
+{
+  "schema": "gmux.fixture/v1",
+  "surface": "sourceControl",
+  "state": "open",
+  "elements": [
+    {
+      "role": "button",
+      "name": "Source Control",
+      "visible": true,
+      "pressed": true
+    },
+    {
+      "role": "tree",
+      "name": "Changes",
+      "visible": true
+    }
+  ],
+  "provenance": "hand-authored from the \u00a744 candidate vocabulary; EVIDENCE ONLY \u2014 not live-validated. Promote only after Phase B reconnaissance + \u00a749 interaction verification + \u00a754 golden-state pass.",
+  "status": "PROVISIONAL",
+  "verification": "UNVALIDATED_LIVE",
+  "elementFormat": "role + accessible name only; fixtures never carry CSS selectors (\u00a751/\u00a753)",
+  "note": "GMUX implements no Git operation (\u00a73); this fixture describes structure only."
+}

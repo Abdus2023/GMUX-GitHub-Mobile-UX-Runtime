@@ -1,343 +1,338 @@
 {
+  "schema": "gmux.gates/v1",
   "artifact": "github-dev-mobile.user.js",
+  "reconArtifact": "gmux-recon.user.js",
   "version": "0.1.0",
-  "adapter": "github-dev",
-  "collectedAt": "2026-09-15T17:24:11.756Z",
+  "adapter": "github-dev@0",
+  "collectedAt": "2026-09-16T07:03:30.751Z",
   "environment": {
     "runtime": "node v22.22.3",
     "os": "linux",
-    "note": "headless static + fake-DOM; no live github.dev session"
+    "harness": "tests/lib/mini-dom.mjs (miniature DOM, not a browser)",
+    "note": "No live github.dev session and no Android device were available; gates requiring them are not marked PASS."
   },
   "suites": {
-    "kernelUnits": {
-      "passed": 113,
-      "zeroFailures": true
+    "run-tests": {
+      "passed": 239,
+      "failed": 0,
+      "green": true
     },
-    "domSmoke": {
-      "passed": 37,
-      "zeroFailures": true
+    "dom-smoke": {
+      "passed": 149,
+      "failed": 0,
+      "green": true
     },
-    "adapterFlow": {
-      "passed": 50,
-      "zeroFailures": true
-    },
-    "reconFixtures": {
-      "passed": 126,
-      "zeroFailures": true
+    "recon-fixtures": {
+      "passed": 255,
+      "failed": 0,
+      "green": true
     }
   },
-  "summary": {
-    "PASS": 9,
-    "PARTIAL": 11,
-    "UNTESTED": 1,
-    "BLOCKED": 0,
-    "FAIL": 0
-  },
-  "finalStatus": "PARTIALLY_VERIFIED",
   "gates": [
     {
       "gate": "G0",
-      "name": "script-loads",
+      "name": "script parses",
       "status": "PASS",
       "evidence": {
-        "metadata": {
-          "name": "GitHub.dev Mobile UX",
-          "version": "0.1.0",
-          "runAt": "document-idle",
-          "grant": "none"
-        },
-        "unitSuite": {
-          "passed": 113,
-          "zeroFailures": true
-        },
-        "smokeSuite": {
-          "passed": 37,
-          "zeroFailures": true
-        },
-        "adapterFlowSuite": {
-          "passed": 50,
-          "zeroFailures": true
-        },
-        "reconFixturesSuite": {
-          "passed": 126,
-          "zeroFailures": true
-        }
+        "command": "node --check github-dev-mobile.user.js && node --check gmux-recon.user.js",
+        "result": "no syntax errors",
+        "runtimeBytes": 80062,
+        "runtimeLines": 2050
       }
     },
     {
       "gate": "G1",
-      "name": "no-uncaught-exceptions",
+      "name": "@match correct",
       "status": "PASS",
       "evidence": {
-        "automatedSuites": "all four complete with exit code 0"
+        "parsed": {
+          "name": "GitHub.dev Mobile UX",
+          "namespace": "github-dev-mobile",
+          "version": "0.1.0",
+          "description": "Mobile interaction layer for github.dev",
+          "match": "https://github.dev/*",
+          "run-at": "document-idle",
+          "grant": "none"
+        },
+        "expected": {
+          "name": "GitHub.dev Mobile UX",
+          "namespace": "github-dev-mobile",
+          "version": "0.1.0",
+          "description": "Mobile interaction layer for github.dev",
+          "match": "https://github.dev/*",
+          "run-at": "document-idle",
+          "grant": "none"
+        },
+        "matchDirectives": 1,
+        "extraDirectives": []
       }
     },
     {
       "gate": "G2",
-      "name": "github-dev-detected",
+      "name": "github.dev detected",
       "status": "PASS",
       "evidence": {
-        "cases": [
+        "githubDev": {
+          "mounted": 1
+        },
+        "otherHosts": [
           {
-            "hostname": "github.dev",
-            "pathname": "/x",
-            "expected": "SUPPORTED_TARGET"
-          },
-          {
-            "hostname": "foo.github.dev",
-            "pathname": "/",
-            "expected": "SUPPORTED_TARGET"
-          },
-          {
-            "hostname": "vscode.dev",
-            "pathname": "/github/a/b",
-            "expected": "SUPPORTED_TARGET"
+            "hostname": "github.com",
+            "mounted": 0,
+            "observers": false
           },
           {
             "hostname": "vscode.dev",
-            "pathname": "/microsoft/vscode",
-            "expected": "UNSUPPORTED_TARGET"
+            "mounted": 0,
+            "observers": false
           },
           {
-            "hostname": "evil.example",
-            "pathname": "/",
-            "expected": "UNSUPPORTED_TARGET"
+            "hostname": "example.com",
+            "mounted": 0,
+            "observers": false
+          },
+          {
+            "hostname": "gist.github.com",
+            "mounted": 0,
+            "observers": false
           }
         ],
-        "hostCheckPrecedesDomMutation": true
+        "adapterDetectEnvironment": true
       }
     },
     {
       "gate": "G3",
-      "name": "mobile-mode-detected",
-      "status": "PARTIAL",
+      "name": "bootstrap failure contained",
+      "status": "PASS",
       "evidence": {
-        "breakpointsTested": {
-          "320": "mobile",
-          "600": "compact",
-          "1024": "compact",
-          "1025": "desktop"
-        },
-        "classificationLogic": "PASS (pure kernel)",
-        "liveDeviceRender": "UNTESTED — requires an Android browser session"
+        "exceptionReachedCaller": false,
+        "diagnosticLogged": true,
+        "shellMounted": false,
+        "hostContinues": "no GMUX DOM present after the failure"
       }
     },
     {
       "gate": "G4",
-      "name": "shell-appears-exactly-once",
+      "name": "shell created once",
       "status": "PASS",
       "evidence": {
-        "shellCountAfterMount": 1,
-        "toolbarCount": 1,
-        "stylesheetCount": 1,
-        "afterReconciliations": 10,
-        "injectedDuplicateRemoved": true,
-        "codeEmitted": "SHELL_DUPLICATION",
-        "suite": "dom-smoke 37 checks"
+        "rootsAfterFiveExtraCalls": 1,
+        "selector": "[data-gmux-owner=\"github-dev-mobile\"][data-gmux-root=\"true\"]"
       }
     },
     {
       "gate": "G5",
-      "name": "editor-remains-usable",
-      "status": "UNTESTED",
+      "name": "style created once",
+      "status": "PASS",
       "evidence": {
-        "designBasis": "no pointer/gesture handlers in v0.1; Escape yields inside editor regions; focus via Monaco textarea.inputarea only (§30)",
-        "requiredLiveChecks": [
-          "editable",
-          "cursor",
-          "selection",
-          "copy/paste",
-          "scroll",
-          "keyboard input"
-        ]
-      },
-      "reason": "physical Android/DevTools session required"
+        "styleNodes": 1,
+        "marker": "data-gmux-style"
+      }
     },
     {
       "gate": "G6",
-      "name": "explorer-opens",
-      "status": "PARTIAL",
+      "name": "observer created once",
+      "status": "PASS",
       "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(explorer) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+        "mutationObserversLive": 1,
+        "viewportListeners": 2,
+        "note": "observers include the stabilization observers used by tests; viewport listener count proves no duplicate listeners"
       }
     },
     {
       "gate": "G7",
-      "name": "explorer-closes",
-      "status": "PARTIAL",
+      "name": "reconciliation idempotent",
+      "status": "PASS",
       "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(explorer) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+        "shellMarkupIdenticalAfter50Reconciles": true,
+        "rootsRemained": [
+          1
+        ],
+        "hundredDispatchesCausedReconciles": 1,
+        "schedulerInvariant": "N mutations → ≤ 1 pending (§22); ≤ 2 allowed for a settle boundary"
       }
     },
     {
       "gate": "G8",
-      "name": "search-opens",
-      "status": "PARTIAL",
+      "name": "desktop remains usable",
+      "status": "PARTIALLY_VERIFIED",
       "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(search) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
-      }
+        "shellHiddenOnDesktop": true,
+        "hostMarkupByteIdenticalToPageWithoutGMUX": true,
+        "referenceMarkup": "<div class=\"workbench\" class=\"workbench\"><div class=\"sidebar\" aria-label=\"Files\" class=\"sidebar\" role=\"tree\"></div><div ",
+        "observedMarkup": "<div class=\"workbench\" class=\"workbench\"><div class=\"sidebar\" aria-label=\"Files\" class=\"sidebar\" role=\"tree\"></div><div ",
+        "noHostClassWrites": true,
+        "harnessScope": "markup equality and hidden state are machine-checked",
+        "unverifiedPart": "human usability (tap targets, scroll ownership, focus order, keyboard) needs a real browser"
+      },
+      "reason": "the usability half of this gate cannot be evidenced headlessly (§60/§68)"
     },
     {
       "gate": "G9",
-      "name": "search-closes",
-      "status": "PARTIAL",
+      "name": "mobile classification works",
+      "status": "PASS",
       "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(search) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
+        "cases": [
+          {
+            "width": 320,
+            "mode": "mobile",
+            "shellVisible": true
+          },
+          {
+            "width": 599,
+            "mode": "mobile",
+            "shellVisible": true
+          },
+          {
+            "width": 600,
+            "mode": "compact",
+            "shellVisible": true
+          },
+          {
+            "width": 768,
+            "mode": "compact",
+            "shellVisible": true
+          },
+          {
+            "width": 1023,
+            "mode": "compact",
+            "shellVisible": true
+          },
+          {
+            "width": 1024,
+            "mode": "desktop",
+            "shellVisible": false
+          },
+          {
+            "width": 1440,
+            "mode": "desktop",
+            "shellVisible": false
+          }
+        ],
+        "boundaries": "width < 600 → mobile · < 1024 → compact · else desktop (§7)",
+        "inferredFrom": "visualViewport width only; no user-agent, platform or brand input (§7)"
       }
     },
     {
       "gate": "G10",
-      "name": "source-control-opens",
-      "status": "PARTIAL",
-      "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(sourceControl) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev",
-        "gitState": "no GMUX Git state by construction (§33)"
-      }
-    },
-    {
-      "gate": "G11",
-      "name": "source-control-closes",
-      "status": "PARTIAL",
-      "evidence": {
-        "kernelClosedLoop": "intent→adapter op→pending→observe→VALIDATED tested with synthetic observations",
-        "stubHost": "50 adapter-flow checks on a stub VS Code workbench: open(sourceControl) returns {ok,operation,evidence} with stateChanged=true level=VALIDATED; re-open is an idempotent already-open result; close is VALIDATED",
-        "adapterRegressionFound": "stub found and forced a real fix: PARTS.statusBar casing bug",
-        "liveActuation": "UNTESTED — real activity-bar click / keybinding on github.dev"
-      }
-    },
-    {
-      "gate": "G12",
-      "name": "android-back-behaves-correctly",
-      "status": "PARTIAL",
-      "evidence": {
-        "priorityDecision": "modal→quickinput→drawer/secondary→ALLOW_BROWSER_DEFAULT (pure test PASS)",
-        "fakeDomEvidence": "popstate opens/closes modal; unowned back falls through; history entries removed",
-        "neverTrapped": "entries exist only while owned UI is presented (§34/I-11)",
-        "liveAndroidChrome": "UNTESTED"
-      }
-    },
-    {
-      "gate": "G13",
-      "name": "keyboard-does-not-destroy-layout",
-      "status": "PARTIAL",
-      "evidence": {
-        "inference": "visualViewport collapse → INFERRED keyboard; CSS geometry vars unit-tested",
-        "toolbarAnchoredToVisualViewport": true,
-        "physicalKeyboard": "UNTESTED — Android soft keyboard session required"
-      }
-    },
-    {
-      "gate": "G14",
-      "name": "route-changes-survive",
-      "status": "PARTIAL",
-      "evidence": {
-        "adoption": "appSurface changes adopted via planner; pending-command guard tested",
-        "observers": "MutationObserver + popstate/hashchange; pushState is not monkey-patched (§35)",
-        "liveSpaNavigation": "UNTESTED"
-      }
-    },
-    {
-      "gate": "G15",
-      "name": "reconciliation-idempotent",
+      "name": "diagnostics available",
       "status": "PASS",
       "evidence": {
-        "before": {
-          "shellCount": 1,
-          "toolbarCount": 1,
-          "explorerButtons": 1
-        },
-        "after": {
-          "shellCount": 1,
-          "toolbarCount": 1,
-          "explorerButtons": 1
-        },
-        "reconciliations": 10,
-        "formalProperty": "R(R(S)) = R(S) for stable observation (class/var diffing, single-shell guard)"
-      }
-    },
-    {
-      "gate": "G16",
-      "name": "preferences-survive-reload",
-      "status": "PARTIAL",
-      "evidence": {
-        "persistenceRoundTrip": "new session via disable→enable reads persisted prefs (fake DOM PASS)",
-        "fullPageReload": "UNTESTED on live host"
-      }
-    },
-    {
-      "gate": "G17",
-      "name": "corrupt-preferences-do-not-prevent-startup",
-      "status": "PASS",
-      "evidence": {
-        "cases": [
-          "invalid JSON",
-          "foreign schema version",
-          "non-object payload",
-          "hostile throwing storage"
-        ],
-        "outcome": "PREFERENCE_PARSE_FAILED emitted, defaults used, boot continues"
-      }
-    },
-    {
-      "gate": "G18",
-      "name": "unsupported-capabilities-reported",
-      "status": "PASS",
-      "evidence": {
-        "capabilityModel": "DETECTED / NOT_DETECTED / UNKNOWN preserved",
-        "terminal": "NOT_DETECTED + feature flag terminalSurface=false; control aria-disabled; diagnostics warn",
-        "commandPaletteClosed": "UNKNOWN (never false without evidence)",
-        "hostRemoval": "adapter-flow: with the workbench removed all capabilities collapse to UNKNOWN and openExplorer returns a structured EXPLORER_NOT_DETECTED failure rather than a silent success",
-        "noVerifiedWithoutEvidence": "feature-status map unit-tested",
-        "inspectionFirst": "recon-fixtures: 7 static fixtures verified minimal/scriptless; 7 DOM mutations degrade with diagnostic evidence (ADAPTER_DRIFT / PROVISIONAL / BLOCKED) and never validate the wrong view; malformed host stays safe"
-      }
-    },
-    {
-      "gate": "G19",
-      "name": "userscript-makes-zero-network-requests",
-      "status": "PASS",
-      "evidence": {
-        "forbiddenPrimitivesScanned": [
-          "fetch-call",
-          "XMLHttpRequest",
-          "WebSocket",
-          "sendBeacon",
-          "GM_xmlhttpRequest",
-          "EventSource",
-          "dynamic-import",
-          "rtcdatachannel"
-        ],
-        "hits": [],
-        "clipboardNote": "navigator.clipboard.writeText is local-only, retained for diagnostics copy"
-      }
-    },
-    {
-      "gate": "G20",
-      "name": "userscript-has-zero-external-dependencies",
-      "status": "PASS",
-      "evidence": {
-        "metadata": {
-          "require": "none declared",
-          "resource": "none declared",
-          "grant": "none"
-        },
-        "requireDirectivePresent": false,
-        "buildStepRequired": false
+        "requiredFieldsPresent": 19,
+        "requiredFieldsTotal": 19,
+        "missing": [],
+        "everyFieldLabelledWithClaimKind": true,
+        "readableReportPrinted": true,
+        "surfacesReported": 5
       }
     }
+  ],
+  "gateSummary": {
+    "PASS": 10,
+    "PARTIALLY_VERIFIED": 1
+  },
+  "supplementalChecks": [
+    {
+      "name": "no @require/@resource/@connect",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "no network primitives in executable code",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "no dynamic import",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "no iframe",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "no framework globals",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "runtime is free of GitHub/VS Code selectors (§12/§13)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "name": "runtime creates no history entries (§39/§40)",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "runtime performs no direct host clicks (§16)",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "runtime writes no host classes/styles",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "no continuous polling (§3/§67)",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "adapter revision starts at 0 (§56)",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "recon artifact is read-only",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "fixtures/github-dev/*.json present",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "recon metadata: single @match, grant none, no requires",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "name": "all automated suites green",
+      "status": "PASS",
+      "detail": "run-tests.mjs:239/0 dom-smoke.mjs:149/0 recon-fixtures.mjs:255/0"
+    },
+    {
+      "name": "performance estimates",
+      "status": "UNVERIFIED",
+      "detail": {
+        "note": "Node + miniature DOM. NOT a browser measurement, so §67 cannot be labelled VERIFIED from this.",
+        "bootstrapAvgMs": 4.61,
+        "bootstrapMaxMs": 4.85,
+        "reconcileAvgMsPerPass": 0.018,
+        "targets": {
+          "bootstrap < 50ms": "bootstrapAvgMs",
+          "reconcile < 5ms": "reconcileAvgMsPerPass"
+        },
+        "requires": "real github.dev session with the Performance panel"
+      }
+    }
+  ],
+  "status": "PARTIALLY_VERIFIED",
+  "meaning": {
+    "PASS": "automated evidence covers the whole claim",
+    "PARTIALLY_VERIFIED": "part of the claim is evidenced; the rest needs a live host or a device",
+    "UNTESTED": "no evidence obtained"
+  },
+  "toReachVerified": [
+    "run the Phase B recon instrument on a live github.dev session and freeze evidence (docs/recon-guide.md)",
+    "human-review candidates into github-dev adapter revision 1 (§50)",
+    "re-run G8 with a real browser and a touch device; measure §67 numbers in the field",
+    "complete fixtures + mutation tests against the real host (§53–§55)"
   ]
 }
