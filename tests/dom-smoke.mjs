@@ -228,6 +228,41 @@ section('Desktop mode leaves the host alone (§27/G8)');
   h.uninstall();
 }
 
+/* -------------------- 8b. the visibility override, end to end ------------ */
+section('A stored mode override reveals the shell at desktop width (§37)');
+{
+  // This is the documented remedy for "the UI is invisible" on a wide window:
+  // §27/G8 hide the shell on desktop by design, so the frozen §37 `mode`
+  // configuration is the only sanctioned lever. Verified end to end here so
+  // the advice is tested rather than asserted.
+  const forced = await boot({
+    width: 1440, height: 900, coarsePointer: false, touchPoints: 0, hostHTML: HOST_HTML,
+    rawPrefs: JSON.stringify({ version: 1, mode: 'mobile' }),
+  });
+  const froot = forced.h.doc.getElementById('gmux-root');
+  check('override wins over viewport classification', forced.K.GMUX.state.mode === 'mobile');
+  check('shell is revealed at 1440px when explicitly configured', froot.hidden === false);
+  const modeField = forced.K.buildReport().fields.find((f) => f.label === 'mode');
+  check('the basis is reported, not silently applied',
+    modeField && modeField.note === 'configuration-override', JSON.stringify(modeField));
+  check('visibility is not capability: commands stay BLOCKED/disabled',
+    forced.h.doc.querySelectorAll('#gmux-toolbar .gmux-btn[aria-disabled="true"]').length === 4);
+  check('no host mutation is caused by the override',
+    forced.h.doc.querySelectorAll('.workbench [data-gmux-owner]').length === 0);
+  check('style node still mounts exactly once',
+    forced.h.doc.querySelectorAll('[data-gmux-style]').length === 1);
+  forced.h.uninstall();
+
+  const pinned = await boot({
+    width: 390, height: 844, coarsePointer: true, touchPoints: 5, hostHTML: HOST_HTML,
+    rawPrefs: JSON.stringify({ version: 1, mode: 'desktop' }),
+  });
+  check('the override forces the hidden direction too', pinned.K.GMUX.state.mode === 'desktop');
+  check('shell stays hidden when configured desktop on a phone viewport',
+    pinned.h.doc.getElementById('gmux-root').hidden === true);
+  pinned.h.uninstall();
+}
+
 /* ------------------------------ 9. kill switch --------------------------- */
 section('Kill switch mounts nothing (§38)');
 {

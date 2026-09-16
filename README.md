@@ -76,6 +76,34 @@ Classification is **observational** — never user-agent, "Android" detection or
 brand (§7): `< 600px` → `mobile` · `600–1023px` → `compact` · `≥ 1024px` → `desktop`
 (shell hidden, host untouched).
 
+## Nothing visible?
+
+That is usually **correct behaviour**, not a failure: at desktop widths GMUX mounts and
+then hides itself, because §27 forbids restyling desktop github.dev. Check these three
+causes in order — from the page console, since GMUX deliberately creates no visible
+affordance when it is not presenting:
+
+| Console check | Reading |
+|---|---|
+| `!!window.GMUX` → `false` | The script never ran. A desktop browser visiting `github.dev/<owner>/<repo>` is **redirected to `vscode.dev/github/…`**, and userscript managers match the final URL — so the frozen `@match https://github.dev/*` (§4) never fires. See [Known risks & open items](#known-risks--open-items). |
+| `!!window.GMUX` → `true`, then `GMUX.inspect().state.disabled` → `true` | Kill switch is engaged (`?gmux=off`, or `disabled: true` in preferences). Nothing is mounted, by design (§38). |
+| `GMUX.inspect().state.mode` → `"desktop"` | **Expected on a wide window.** Presentation only; observation and the adapter keep running, which is why `GMUX.inspect()` still returns a full report. |
+
+To see the shell on a wide window: narrow the window below 1024px (`compact`) or 600px
+(`mobile`), use DevTools device emulation, or use the frozen §37 `mode` override, which
+exists precisely for this:
+
+```js
+localStorage.setItem('github-dev-mobile:v1', JSON.stringify({ version: 1, mode: 'mobile' }));
+location.reload();   // preferences are read once, at boot
+```
+
+The override changes **presentation only**. At adapter revision 0 everything is still
+`BLOCKED`, so the four commands render disabled with their reason attached — visible
+controls are not working features (§15). Verified in `dom-smoke` §8b: the override reveals
+the root at 1440px, reports `configuration-override` as its basis, pins capability state
+unchanged, and mutates no host node.
+
 ## Use
 
 | Control | Behaviour |

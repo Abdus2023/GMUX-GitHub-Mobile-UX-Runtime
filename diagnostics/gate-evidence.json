@@ -4,7 +4,7 @@
   "reconArtifact": "gmux-recon.user.js",
   "version": "0.1.0",
   "adapter": "github-dev@0",
-  "collectedAt": "2026-09-16T06:38:24.108Z",
+  "collectedAt": "2026-09-16T07:03:30.751Z",
   "environment": {
     "runtime": "node v22.22.3",
     "os": "linux",
@@ -18,7 +18,7 @@
       "green": true
     },
     "dom-smoke": {
-      "passed": 141,
+      "passed": 149,
       "failed": 0,
       "green": true
     },
@@ -305,16 +305,16 @@
     {
       "name": "all automated suites green",
       "status": "PASS",
-      "detail": "run-tests.mjs:239/0 dom-smoke.mjs:141/0 recon-fixtures.mjs:255/0"
+      "detail": "run-tests.mjs:239/0 dom-smoke.mjs:149/0 recon-fixtures.mjs:255/0"
     },
     {
       "name": "performance estimates",
       "status": "UNVERIFIED",
       "detail": {
         "note": "Node + miniature DOM. NOT a browser measurement, so §67 cannot be labelled VERIFIED from this.",
-        "bootstrapAvgMs": 4.72,
-        "bootstrapMaxMs": 5.15,
-        "reconcileAvgMsPerPass": 0.02,
+        "bootstrapAvgMs": 4.61,
+        "bootstrapMaxMs": 4.85,
+        "reconcileAvgMsPerPass": 0.018,
         "targets": {
           "bootstrap < 50ms": "bootstrapAvgMs",
           "reconcile < 5ms": "reconcileAvgMsPerPass"
