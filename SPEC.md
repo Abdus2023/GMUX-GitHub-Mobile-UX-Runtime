@@ -12,6 +12,25 @@
 **Dependencies:** Zero
 **Network requests by userscript:** Zero
 
+> ## Superseded for v0.1 by the Instructions Pack
+>
+> This document remains the broader project contract, but the **v0.1 boundary is frozen by
+> the *Prompt Instructions Pack v0.1* (74 sections)**. Where the two disagree, the pack
+> wins for `0.1.0`, and the deltas are recorded with their reasoning in
+> [`docs/pack-compliance.md`](docs/pack-compliance.md). The four conflict classes are:
+>
+> | Topic | This SPEC said | Pack v0.1 requires |
+> |---|---|---|
+> | Host scope (§7) | match `github.dev`, `*.github.dev`, `vscode.dev/github/*` | exactly one `@match https://github.dev/*`, `@namespace github-dev-mobile`, no extra directives (§4) |
+> | Host selectors in the runtime (§9/§58) | adapter carries a selector registry with provenance | **no** guessed GitHub/VS Code selectors in the runtime; adapter intentionally incomplete, all `BLOCKED` (§12/§13/§72); structure is acquired by the separate Recon instrument (§42) |
+> | State vocabulary (§18–§23) | lifecycle/nav/capability state, `OPEN_SURFACE`-style actions, `DETECTED/NOT_DETECTED`, numeric confidence | the frozen `initialState` key set, the twelve §10 action names, categorical `UNKNOWN/LOW/MEDIUM/HIGH` confidence, four result statuses (§9/§10/§14/§19) |
+> | Back + history (§35/§36) | `pushState`-layered Back so hardware Back closes GMUX UI | never create browser history entries for GMUX surfaces; Back is an application command with the §39 priority and is never trapped (§39/§40) |
+>
+> Feature flags (`FEATURES`), `GMUX.getState()/getCapabilities()/reconcile()/disable()`,
+> the `Alt+Shift+G` toggle and the `.gmux-revive` chip are likewise out of v0.1: the pack
+> fixes the namespace to six members plus `inspect()` (§5) and requires that a disabled
+> runtime mount **nothing at all** (§38).
+
 # 1. Contract Objective
 
 Implement a small, dependency-free mobile interaction layer above the existing `github.dev` / VS Code Web application.

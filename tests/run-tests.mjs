@@ -1,359 +1,461 @@
 #!/usr/bin/env node
 /**
- * GMUX pure-kernel verification suite — v0.1 Concrete Implementation Contract.
+ * GMUX v0.1 kernel suite — pure contracts, no DOM.
  *
- * Dependency-free: runs with plain Node (>= 18):
- *     node tests/run-tests.mjs
+ * Dependency-free: node tests/run-tests.mjs
  *
- * Scope (honest, invariant I-15 "NO EVIDENCE → NO VERIFIED CLAIM"): these
- * checks cover the DOM-free kernel — host detection, mode policy, transitions,
- * Android Back decisions, preferences, scheduler, commands, capability
- * classification, keyboard inference, pending validation, reconcile planner
- * and feature-status honesty. Live github.dev behavior is exercised by the
- * manual matrix and recorded in VERIFICATION_REPORT.md.
+ * The userscript is required with no `window`/`document` present, so only the
+ * DOM-free kernel is reachable. That is deliberate: it proves the kernel has no
+ * structural dependency on a page (pack §59 containment, §21 convergence) and
+ * it keeps every assertion here about contracts the pack freezes —
+ * environment, heuristic labelling, state shape, the twelve reducer actions,
+ * capability derivation, verification and the BLOCKED adapter.
+ *
+ * Honesty rule (§60/§68): nothing here exercises live github.dev. Gates that
+ * need a real browser are recorded UNTESTED by tests/gates.mjs.
  */
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const K = require('../github-dev-mobile.user.js');
+
+/**
+ * Two views of the artifact: `src` keeps comments (several assertions below are
+ * about the *documentation* the pack requires, e.g. the HEURISTIC label), while
+ * `code` has comments stripped so forbidden-API scans only judge executable
+ * text — the file legitimately names `iframe`, `Android` and `Monaco` while
+ * explaining that it does not use them.
+ */
+const src = readFileSync(new URL('../github-dev-mobile.user.js', import.meta.url), 'utf8');
+const code = src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(^|[^:"'\\])\/\/[^\n]*/g, '$1');
 
 let passed = 0;
 let failed = 0;
 const failures = [];
 
-function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function check(name, cond, detail) {
-  if (cond) { passed++; }
-  else {
-    failed++;
-    failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
-    console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`);
-  }
+  if (cond) { passed++; return; }
+  failed++;
+  failures.push(name + (detail ? ` — ${detail}` : ''));
+  console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`);
 }
-function section(title) { console.log(`\n== ${title} ==`); }
+function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function section(t) { console.log(`\n== ${t} ==`); }
 
-/* ------------------------- host detection (§7) --------------------------- */
-section('Host detection precedes DOM mutation (§7)');
-const loc = (hostname, pathname = '/') => ({ hostname, pathname });
-check('github.dev supported', K.detectTarget(loc('github.dev', '/microsoft/vscode')) === K.TARGET.SUPPORTED);
-check('*.github.dev supported', K.detectTarget(loc('foo.github.dev')) === K.TARGET.SUPPORTED);
-check('vscode.dev/github/* supported', K.detectTarget(loc('vscode.dev', '/github/microsoft/vscode')) === K.TARGET.SUPPORTED);
-check('*.vscode.dev/github/* supported', K.detectTarget(loc('insiders.vscode.dev', '/github/o/r')) === K.TARGET.SUPPORTED);
-check('vscode.dev non-github route unsupported', K.detectTarget(loc('vscode.dev', '/microsoft/vscode')) === K.TARGET.UNSUPPORTED);
-check('example.com unsupported', K.detectTarget(loc('example.com')) === K.TARGET.UNSUPPORTED);
-check('missing location unsupported', K.detectTarget(null) === K.TARGET.UNSUPPORTED);
 
-/* ----------------------- feature flags (§36) ----------------------------- */
-section('Feature flags (§36)');
-check('v0.1 flags present', ['mobileShell', 'immersiveEditor', 'explorerDrawer', 'searchSurface',
-  'sourceControlSurface', 'terminalSurface', 'gestures', 'androidBack', 'diagnostics'].every((f) => f in K.FEATURES));
-check('gestures deferred (false)', K.FEATURES.gestures === false);
-check('terminal disabled by default (false)', K.FEATURES.terminalSurface === false);
-check('androidBack enabled', K.FEATURES.androidBack === true);
-check('mobileShell enabled', K.FEATURES.mobileShell === true);
+/* ---------------------------- §5 namespace ------------------------------- */
+section('Global namespace (§5)');
+check('GMUX exists', K.GMUX && typeof K.GMUX === 'object');
+check('GMUX.version is 0.1.0', K.GMUX.version === '0.1.0');
+check('GMUX.inspect is required', typeof K.GMUX.inspect === 'function');
+check('namespace keys are exactly the frozen six plus version/inspect',
+  eq(Object.keys(K.GMUX).slice().sort(),
+    ['adapter', 'inspect', 'observer', 'shell', 'state', 'version', 'viewportObserver'].sort()),
+  Object.keys(K.GMUX).join(','));
+check('boot state is null before bootstrap (no DOM here)', K.GMUX.state === null);
 
-/* ------------------------- failure taxonomy (§45) ------------------------ */
-section('Failure taxonomy (§45)');
-['BOOTSTRAP_FAILED', 'ADAPTER_NOT_FOUND', 'APPLICATION_NOT_DETECTED', 'CAPABILITY_UNKNOWN',
-  'EDITOR_NOT_DETECTED', 'EXPLORER_NOT_DETECTED', 'SEARCH_NOT_DETECTED', 'SOURCE_CONTROL_NOT_DETECTED',
-  'TERMINAL_NOT_DETECTED', 'SHELL_MOUNT_FAILED', 'SHELL_DUPLICATION', 'DOM_CHANGED',
-  'UNSUPPORTED_LAYOUT', 'VIEWPORT_UNAVAILABLE', 'PREFERENCE_PARSE_FAILED', 'COMMAND_FAILED',
-  'RECONCILIATION_FAILED'].forEach((code) => check(`FAIL.${code} defined`, K.FAIL[code] === code));
+/* --------------------------- §7 environment ------------------------------ */
+section('Environment is observational (§7)');
+const env = K.getEnvironment();
+check('getEnvironment returns the five contract fields',
+  ['width', 'height', 'orientation', 'coarsePointer', 'touchPoints'].every((k) => k in env));
+check('zero geometry without a window', env.width === 0 && env.height === 0);
+check('width>=height classifies landscape', env.orientation === 'landscape');
+check('coarsePointer degrades to false without matchMedia', env.coarsePointer === false);
+check('touchPoints defaults to 0', env.touchPoints === 0);
+check('classifyViewport: 599 → mobile', K.classifyViewport({ width: 599 }) === 'mobile');
+check('classifyViewport: 0 → mobile', K.classifyViewport({ width: 0 }) === 'mobile');
+check('classifyViewport: 600 → compact (boundary is exclusive)', K.classifyViewport({ width: 600 }) === 'compact');
+check('classifyViewport: 1023 → compact', K.classifyViewport({ width: 1023 }) === 'compact');
+check('classifyViewport: 1024 → desktop (boundary is exclusive)', K.classifyViewport({ width: 1024 }) === 'desktop');
+check('classifyViewport: 2560 → desktop', K.classifyViewport({ width: 2560 }) === 'desktop');
+check('breakpoint constants match §7', K.MOBILE_MAX_WIDTH === 600 && K.COMPACT_MAX_WIDTH === 1024);
+check('no user-agent sniffing in executable code', !/navigator\.userAgent|Android\b|CriOS|FxiOS|Chrome\/|iPhone|iPad/i.test(code));
+check('no browser-brand inference in executable code', !/navigator\.vendor|navigator\.platform/.test(code));
 
-/* ------------------------- mode policy (§18) ----------------------------- */
-section('Viewport classification is centralized (§18)');
-check('320px -> mobile', K.modeForWidth(320) === 'mobile');
-check('599px -> mobile', K.modeForWidth(599) === 'mobile');
-check('600px -> compact', K.modeForWidth(600) === 'compact');
-check('1024px -> compact (desktop is >1024)', K.modeForWidth(1024) === 'compact');
-check('1025px -> desktop', K.modeForWidth(1025) === 'desktop');
-check('override wins over width', K.modeForWidth(1400, K.DEFAULT_BREAKPOINTS, 'mobile') === 'mobile');
-check('unknown override falls back to width', K.modeForWidth(320, K.DEFAULT_BREAKPOINTS, 'nonsense') === 'mobile');
+section('Mode resolution keeps configuration and measurement distinct');
+check('auto defers to classification', eq(K.resolveMode('mobile', 'auto'), { mode: 'mobile', source: 'viewport-classification' }));
+check('explicit mode overrides with a stated basis', eq(K.resolveMode('desktop', 'mobile'), { mode: 'mobile', source: 'configuration-override' }));
+check('unknown preference value is not an override', K.resolveMode('compact', 'tablet').mode === 'compact');
 
-/* --------------------------- transitions (§17) --------------------------- */
-section('Surface transitions');
-const S = K.SURFACE;
-const mkState = (surface, prev = null) => ({ activeSurface: surface, previousSurface: prev });
-check('editor + openExplorer -> explorer', K.transitionFor(mkState(S.EDITOR), 'openExplorer').to === S.EXPLORER);
-check('editor + openSearch -> search', K.transitionFor(mkState(S.EDITOR), 'openSearch').to === S.SEARCH);
-check('editor + openSourceControl -> sourceControl', K.transitionFor(mkState(S.EDITOR), 'openSourceControl').to === S.SOURCE_CONTROL);
-check('editor + openTerminal -> terminal', K.transitionFor(mkState(S.EDITOR), 'openTerminal').to === S.TERMINAL);
-check('explorer + selectFile -> editor', K.transitionFor(mkState(S.EXPLORER), 'selectFile').to === S.EDITOR);
-check('search + selectResult -> editor', K.transitionFor(mkState(S.SEARCH), 'selectResult').to === S.EDITOR);
-check('close -> previousSurface', K.transitionFor(mkState(S.EXPLORER, S.SOURCE_CONTROL), 'close').to === S.SOURCE_CONTROL);
-check('close without previous -> editor', K.transitionFor(mkState(S.TERMINAL), 'close').to === S.EDITOR);
-check('close on editor rejected', K.transitionFor(mkState(S.EDITOR), 'close').ok === false);
-{
-  const r = K.transitionFor(mkState(S.SOURCE_CONTROL), 'openTerminal');
-  check('unknown transition diagnosable', r.ok === false && r.code === K.FAIL.COMMAND_FAILED);
-}
+/* ------------------------- §8 keyboard heuristic -------------------------- */
+section('Keyboard is a labelled heuristic (§8)');
+check('threshold constant is 150', K.KEYBOARD_THRESHOLD === 150);
+check('labelled HEURISTIC in source comments', /§8 HEURISTIC/.test(src));
+check('returns false with no visualViewport', K.keyboardLikelyVisible() === false);
+check('source names it a heuristic, not detection', /NOT definitive keyboard detection/.test(src));
 
-/* ------------------------ Android Back decisions (§34) ------------------- */
-section('Android Back decision (§34, I-11)');
-check('modal wins first', K.planBack({ modal: 'menu', activeSurface: S.EDITOR }).consume === 'modal');
-check('quick input consumed next', K.planBack({ quickInputVisible: true, activeSurface: S.EDITOR }).consume === 'quickinput');
-check('drawer returns to editor', K.planBack({ activeSurface: S.EXPLORER }).consume === 'surface');
-check('drawer returns to previous', K.planBack({ activeSurface: S.SEARCH, previousSurface: S.SOURCE_CONTROL }).to === S.SOURCE_CONTROL);
-check('terminal is a secondary surface', K.planBack({ activeSurface: S.TERMINAL }).consume === 'surface');
-check('settings is a secondary surface', K.planBack({ activeSurface: S.SETTINGS }).consume === 'surface');
-const def = K.planBack({ activeSurface: S.EDITOR });
-check('editor with nothing open -> ALLOW_BROWSER_DEFAULT', def.consume === null);
-
-/* ------------------------- preferences (§39/§40) ------------------------- */
-section('Preferences are versioned and corruption tolerant (§39/§40, I-12)');
-{
-  const { prefs, notes } = K.parsePreferences(null);
-  check('missing storage -> defaults', eq(prefs, K.PREF_DEFAULTS) && notes.length === 0);
-}
-check('default schema shape', eq(Object.keys(K.PREF_DEFAULTS).sort(), ['bottomBar', 'immersive', 'mode', 'preferredSurface', 'version']));
-{
-  const { prefs, notes } = K.parsePreferences('{oops');
-  check('corrupt JSON -> defaults + PREFERENCE_PARSE_FAILED',
-    eq(prefs, K.PREF_DEFAULTS) && notes.some((n) => n.code === K.FAIL.PREFERENCE_PARSE_FAILED));
-}
-{
-  const { prefs } = K.parsePreferences(JSON.stringify({ version: 99, immersive: false }));
-  check('foreign schema version -> defaults', prefs.immersive === true);
-}
-{
-  const good = { version: 1, mode: 'mobile', immersive: false, preferredSurface: 'sourceControl', bottomBar: false };
-  const { prefs, notes } = K.parsePreferences(JSON.stringify(good));
-  check('valid prefs round-trip', eq(prefs, good) && notes.length === 0);
-}
-{
-  const { prefs } = K.parsePreferences(JSON.stringify({ version: 1, mode: 42, immersive: 'yes', preferredSurface: 'golf', bottomBar: [] }));
-  check('wrong-typed fields fall back', eq(prefs, K.PREF_DEFAULTS));
-}
-{
-  const { prefs, notes } = K.parsePreferences('[1,2,3]');
-  check('array payload rejected', eq(prefs, K.PREF_DEFAULTS) && notes.length === 1);
-}
-{
-  const diag = K.createDiagLog();
-  const hostile = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
-  let threw = false;
-  try {
-    const ps = K.createPreferenceStore({ storage: hostile }, diag);
-    ps.load(); ps.set({ immersive: false }); ps.reset();
-  } catch (e) { threw = true; }
-  check('hostile storage never throws (startup always proceeds)', threw === false);
+/* ----------------------------- §9 state ---------------------------------- */
+section('State contract (§9)');
+const s0 = K.initialState;
+check('exact key set, no extras',
+  eq(Object.keys(s0).sort(), ['capabilities', 'diagnostics', 'drawer', 'immersive', 'keyboardVisible', 'mode', 'pendingAction', 'previousSurface', 'surface'].sort()),
+  Object.keys(s0).join(','));
+check('defaults: desktop / editor / no drawer / no pending',
+  s0.mode === 'desktop' && s0.surface === 'editor' && s0.drawer === null && s0.pendingAction === null && s0.previousSurface === null);
+check('diagnostics counters start at zero with null lastError',
+  s0.diagnostics.observations === 0 && s0.diagnostics.reconciliations === 0 && s0.diagnostics.lastError === null);
+for (const hostState of ['repository', 'branch', 'file', 'cursor', 'selection', 'editorModel', 'terminalSession', 'gitStatus']) {
+  check(`no parallel host state: ${hostState}`, !(hostState in s0));
 }
 
-/* ---------------------------- scheduler (§28) ---------------------------- */
-section('Reconcile scheduling coalesces (§26/§28, I-04)');
-await (async () => {
-  let rafCb = null;
-  const env = { requestAnimationFrame: (fn) => { rafCb = fn; return 1; } };
-  const sched = K.createScheduler(env);
-  let calls = 0;
-  let seenReasons = null;
-  sched.onReconcile((rs) => { calls++; seenReasons = rs; });
-  sched.markDirty('mutation');
-  sched.markDirty('resize');
-  sched.markDirty('viewport');
-  check('coalesced to a single pending frame', sched.pending() === true && calls === 0);
-  rafCb(Date.now());
-  check('one reconcile for multiple signals', calls === 1);
-  check('reasons merged', seenReasons && seenReasons.slice().sort().join(',') === 'mutation,resize,viewport');
-  rafCb = null;
-  sched.markDirty('x');
-  rafCb(Date.now());
-  check('subsequent frame schedules again', calls === 2);
-})();
+/* ---------------------------- §10 reducer -------------------------------- */
+section('Reducer: the twelve actions (§10)');
+for (const name of ['ENVIRONMENT_CHANGED', 'OPEN_SURFACE_REQUEST', 'SURFACE_COMMITTED', 'SURFACE_REJECTED',
+  'CLOSE_SURFACE_REQUEST', 'IMMERSIVE_TOGGLE', 'KEYBOARD_CHANGED', 'CAPABILITIES_CHANGED', 'BACK',
+  'DIAGNOSTICS_OPEN', 'DIAGNOSTICS_CLOSE', 'DISABLE']) {
+  check(`action ${name} is defined`, K.ACTION[name] === name);
+}
+const A = K.ACTION;
+check('ENVIRONMENT_CHANGED updates mode', K.reducer(s0, { type: A.ENVIRONMENT_CHANGED, mode: 'mobile' }).mode === 'mobile');
+const onceMode = K.reducer(s0, { type: A.ENVIRONMENT_CHANGED, mode: 'mobile' });
+check('ENVIRONMENT_CHANGED is idempotent (re-application returns the same reference)',
+  K.reducer(onceMode, { type: A.ENVIRONMENT_CHANGED, mode: 'mobile' }) === onceMode);
+check('unchanged environment returns the identical reference (no needless churn)',
+  (() => { const b = { ...s0, mode: 'mobile' }; return K.reducer(b, { type: A.ENVIRONMENT_CHANGED, mode: 'mobile' }) === b; })());
 
-/* --------------------------- commands (§22/§23) -------------------------- */
-section('Command registry never silently succeeds');
-{
-  const diag = K.createDiagLog();
-  const reg = K.createCommandRegistry(diag);
-  reg.register('open-explorer', () => ({ ok: true, operation: 'open-explorer', evidence: { stateChanged: true } }));
-  reg.register('boom', () => { throw new Error('exploded'); });
-  check('registered command runs', reg.execute('open-explorer').ok === true);
-  const miss = reg.execute('missing');
-  check('missing command -> COMMAND_FAILED', miss.ok === false && miss.code === K.FAIL.COMMAND_FAILED);
-  check('throwing command -> COMMAND_FAILED', reg.execute('boom').ok === false);
-  check('failure recorded in diagnostics', diag.entries().some((e) => e.code === K.FAIL.COMMAND_FAILED));
-}
+const requested = K.reducer(s0, { type: A.OPEN_SURFACE_REQUEST, surface: 'explorer' });
+check('OPEN_SURFACE_REQUEST only sets pending state',
+  eq(requested.pendingAction && { type: requested.pendingAction.type, surface: requested.pendingAction.surface }, { type: 'open', surface: 'explorer' }));
+check('OPEN_SURFACE_REQUEST does not move surface', requested.surface === 'editor' && requested.previousSurface === null);
+check('OPEN_SURFACE_REQUEST does not open the drawer', requested.drawer === null);
+check('request for editor is refused', K.reducer(s0, { type: A.OPEN_SURFACE_REQUEST, surface: 'editor' }) === s0);
+check('request for an unknown surface is refused', K.reducer(s0, { type: A.OPEN_SURFACE_REQUEST, surface: 'notebook' }) === s0);
 
-/* ------------------------ capabilities (§12/§13) ------------------------- */
-section('Capability detection supports uncertainty');
-function obsWith(over = {}) {
-  return Object.assign({
-    application: { detected: true },
-    surfaces: {
-      editor: { present: true }, explorer: { present: true }, search: { present: true },
-      sourceControl: { present: false }, terminal: { present: false },
-    },
-    parts: {
-      activityBar: { present: true }, statusBar: { present: true },
-      sideBar: { visible: false }, quickInput: { present: false, visible: false },
-    },
-  }, over);
-}
-{
-  const caps = K.classifyCapabilities({ application: { detected: false } });
-  check('application not detected -> all UNKNOWN (never false)', Object.values(caps).every((v) => v === K.CAP.UNKNOWN));
-  check('minimum capability set (§12)', ['editor', 'explorer', 'search', 'sourceControl', 'terminal', 'activityBar', 'statusBar', 'commandPalette']
-    .every((k) => k in caps));
-}
-{
-  const caps = K.classifyCapabilities(obsWith());
-  check('present surfaces DETECTED', caps.editor === K.CAP.DETECTED && caps.explorer === K.CAP.DETECTED && caps.search === K.CAP.DETECTED);
-  check('unrendered SCM NOT_DETECTED (not absent-as-false)', caps.sourceControl === K.CAP.NOT_DETECTED);
-  check('terminal NOT_DETECTED', caps.terminal === K.CAP.NOT_DETECTED);
-  check('parts detected', caps.activityBar === K.CAP.DETECTED && caps.statusBar === K.CAP.DETECTED);
-  check('command palette UNKNOWN while closed (§12)', caps.commandPalette === K.CAP.UNKNOWN);
-}
-{
-  const caps = K.classifyCapabilities(obsWith({ parts: { activityBar: { present: true }, statusBar: { present: true }, sideBar: { visible: false }, quickInput: { present: true, visible: true } } }));
-  check('command palette DETECTED only when observed', caps.commandPalette === K.CAP.DETECTED);
-}
-check('terminal host expectation github.dev', K.terminalHostExpectation('github.dev') === 'likely-unsupported');
-check('terminal host expectation other host unknown', K.terminalHostExpectation('example.com') === 'unknown');
+const base = { ...s0, surface: 'search', drawer: { kind: 'surface', surface: 'search' } };
+const committed = K.reducer({ ...s0, surface: 'explorer', drawer: { kind: 'surface', surface: 'explorer' }, pendingAction: { type: 'open', surface: 'terminal' } },
+  { type: A.SURFACE_COMMITTED, surface: 'terminal' });
+check('SURFACE_COMMITTED records previous surface', committed.previousSurface === 'explorer');
+check('SURFACE_COMMITTED sets surface', committed.surface === 'terminal');
+check('SURFACE_COMMITTED clears pending', committed.pendingAction === null);
+check('SURFACE_COMMITTED resets drawer to the committed window', eq(committed.drawer, { kind: 'surface', surface: 'terminal' }));
+check('SURFACE_COMMITTED to editor closes the drawer',
+  K.reducer(committed, { type: A.SURFACE_COMMITTED, surface: 'editor' }).drawer === null);
+check('SURFACE_COMMITTED refuses unknown surfaces', K.reducer(s0, { type: A.SURFACE_COMMITTED, surface: 'hacker' }) === s0);
 
-/* ------------------------ keyboard inference (§29) ----------------------- */
-section('Virtual keyboard is INFERRED from visualViewport');
-check('full viewport -> closed/inferred', (() => {
-  const r = K.inferKeyboard({ vvAvailable: true, vvHeight: 732, vvWidth: 412, layoutHeight: 732, layoutWidth: 412 });
-  return r.visible === false && r.evidence === K.EVIDENCE.INFERRED;
+const rejected = K.reducer(requested, { type: A.SURFACE_REJECTED });
+check('SURFACE_REJECTED clears pending only', rejected.pendingAction === null && rejected.surface === 'editor');
+check('SURFACE_REJECTED keeps host surface untouched', rejected.surface === s0.surface);
+
+const closeReq = K.reducer(base, { type: A.CLOSE_SURFACE_REQUEST });
+check('CLOSE_SURFACE_REQUEST closes the GMUX window', closeReq.drawer === null);
+check('CLOSE_SURFACE_REQUEST keeps surface until verified (§69)', closeReq.surface === 'search');
+check('CLOSE_SURFACE_REQUEST records a close intent', closeReq.pendingAction.type === 'close' && closeReq.pendingAction.surface === 'search');
+
+check('IMMERSIVE_TOGGLE flips', K.reducer(s0, { type: A.IMMERSIVE_TOGGLE }).immersive === true);
+check('IMMERSIVE_TOGGLE flips back', K.reducer(K.reducer(s0, { type: A.IMMERSIVE_TOGGLE }), { type: A.IMMERSIVE_TOGGLE }).immersive === false);
+check('KEYBOARD_CHANGED sets visible', K.reducer(s0, { type: A.KEYBOARD_CHANGED, visible: true }).keyboardVisible === true);
+check('KEYBOARD_CHANGED dedupes', (() => { const b2 = { ...s0, keyboardVisible: true }; return K.reducer(b2, { type: A.KEYBOARD_CHANGED, visible: true }) === b2; })());
+check('CAPABILITIES_CHANGED replaces the derived map',
+  eq(K.reducer(s0, { type: A.CAPABILITIES_CHANGED, capabilities: { explorer: true } }).capabilities, { explorer: true }));
+check('CAPABILITIES_CHANGED dedupes equal maps',
+  (() => { const b3 = { ...s0, capabilities: { explorer: false, editor: false } }; return K.reducer(b3, { type: A.CAPABILITIES_CHANGED, capabilities: { explorer: false, editor: false } }) === b3; })());
+const disabled = K.reducer(base, { type: A.DISABLE });
+check('DISABLE marks state disabled and retreats to editor',
+  disabled.disabled === true && disabled.surface === 'editor' && disabled.drawer === null && disabled.pendingAction === null);
+check('unknown action types are inert', K.reducer(s0, { type: 'SOMETHING_ELSE' }) === s0);
+check('reducer never returns undefined for a known action', K.reducer(s0, { type: A.DIAGNOSTICS_OPEN }) !== undefined);
+
+/* -------------------------- §10 reducer purity ---------------------------- */
+section('Reducer purity (§10: no DOM)');
+const reducerBody = code.slice(code.indexOf('function reducer(state, action)'), code.indexOf('function planBack(state)'));
+check('reducer body is locatable for the purity scan', reducerBody.length > 400 && reducerBody.includes('case ACTION.DISABLE'));
+check('reducer body has no DOM references', !/document|window|querySelector|getElementById|\.style|classList|localStorage|adapter\./.test(reducerBody),
+  'found a host/DOM reference inside reducer()');
+check('reducer body has no side-effect APIs', !/setTimeout|fetch|dispatch\(|scheduleReconcile/.test(reducerBody));
+
+/* ---------------------------- §39/§40 back ------------------------------- */
+section('Back priority and navigation (§39/§40)');
+check('nothing owned → Back is not consumed', K.planBack(s0).consume === false && K.planBack(s0).step === 'browser-default');
+check('diagnostics outranks everything', (() => {
+  const st = { ...s0, drawer: { kind: 'diagnostics' }, surface: 'search' };
+  const p = K.planBack(st);
+  return p.consume === true && p.step === 'diagnostics' && p.action.type === A.DIAGNOSTICS_CLOSE;
 })());
-check('height collapse -> open/inferred', (() => {
-  const r = K.inferKeyboard({ vvAvailable: true, vvHeight: 400, vvWidth: 412, layoutHeight: 732, layoutWidth: 412 });
-  return r.visible === true && r.evidence === K.EVIDENCE.INFERRED;
+check('drawer outranks secondary surface', (() => {
+  const st = { ...s0, drawer: { kind: 'surface', surface: 'explorer' }, surface: 'explorer' };
+  const p = K.planBack(st);
+  return p.step === 'drawer' && p.action.type === A.CLOSE_SURFACE_REQUEST && p.command === 'close-explorer';
 })());
-check('width collapse too -> not claimed as keyboard', K.inferKeyboard({ vvAvailable: true, vvHeight: 400, vvWidth: 200, layoutHeight: 732, layoutWidth: 412 }).visible === false);
-check('no API -> UNKNOWN', K.inferKeyboard({ vvAvailable: false }).evidence === K.CAP.UNKNOWN);
+check('secondary surface returns to editor via the engine, not the reducer', (() => {
+  const st = { ...s0, surface: 'search' };
+  const p = K.planBack(st);
+  return p.step === 'secondary-surface' && p.action === null && p.command === 'close-search';
+})());
+check('BACK applies the same priority as planBack',
+  K.reducer({ ...s0, drawer: { kind: 'diagnostics' } }, { type: A.BACK }).drawer === null);
+check('BACK with nothing owned is a no-op', K.reducer(s0, { type: A.BACK }) === s0);
+check('nav stack is editor-only at rest', eq(K.navStack(s0), ['editor']));
+check('nav stack holds at most two entries', eq(K.navStack({ ...s0, surface: 'search' }), ['editor', 'search']));
+check('diagnostics opens the owned window', K.reducer(s0, { type: A.DIAGNOSTICS_OPEN }).drawer.kind === 'diagnostics');
+check('diagnostics open dedupes', (() => { const b4 = K.reducer(s0, { type: A.DIAGNOSTICS_OPEN }); return K.reducer(b4, { type: A.DIAGNOSTICS_OPEN }) === b4; })());
+const surfaceDrawerState = { ...s0, drawer: { kind: 'surface', surface: 'explorer' } };
+check('diagnostics close ignores a surface drawer',
+  K.reducer(surfaceDrawerState, { type: A.DIAGNOSTICS_CLOSE }) === surfaceDrawerState);
+check('diagnostics close leaves the host surface alone',
+  K.reducer(surfaceDrawerState, { type: A.DIAGNOSTICS_CLOSE }).surface === 'editor');
 
-/* --------------------- pending validation (§10/§13) ---------------------- */
-section('Operation validation is separate from capability detection');
-const t0 = 1000;
-const sidebarObs = (viewKey) => ({
-  parts: { sideBar: { visible: true }, quickInput: { visible: false } },
-  surfaces: { terminal: { visible: false } },
-  sidebarActiveView: viewKey,
+/* ------------------------ §11/§12 adapter contract ------------------------ */
+section('Host adapter is intentionally incomplete (§12)');
+const ad = K.GitHubDevAdapter;
+check('id is github-dev', ad.id === 'github-dev');
+check('revision starts at 0', ad.revision === 0);
+check('observe returns the five surfaces', eq(Object.keys(ad.observe()).sort(), ['editor', 'explorer', 'search', 'sourceControl', 'terminal'].sort()));
+for (const surface of ['editor', 'explorer', 'search', 'sourceControl', 'terminal']) {
+  check(`find${surface[0].toUpperCase()}${surface.slice(1)}() is null`, ad[`find${surface[0].toUpperCase()}${surface.slice(1)}`]() === null);
+  check(`observe().${surface} is null`, ad.observe()[surface] === null);
+  const r = ad.resolveSurface(surface);
+  check(`resolveSurface(${surface}) is BLOCKED`, r.status === 'BLOCKED' && r.reason === 'No verified host mapping yet.');
+}
+const invoked = ad.invoke('open-explorer');
+check('invoke is BLOCKED with the §12 reason', invoked.status === 'BLOCKED' && invoked.reason === 'GitHub-specific interaction not verified.');
+const verified = ad.verify('open-explorer', {}, {});
+check('verify is BLOCKED with the §12 reason', verified.status === 'BLOCKED' && verified.reason === 'Verification contract not implemented.');
+check('verify echoes action/before/after', verified.action === 'open-explorer' && verified.before && verified.after);
+const restored = ad.restore({ any: 'snapshot' });
+check('restore is PROVISIONAL and echoes the snapshot', restored.status === 'PROVISIONAL' && eq(restored.snapshot, { any: 'snapshot' }));
+
+/* -------------------- §14/§15 observation + capability -------------------- */
+section('Observation records and capabilities (§14/§15)');
+const { records } = K.observeSurfaces(ad);
+check('record has the five §14 fields', ['surface', 'detected', 'evidence', 'strategy', 'confidence'].every((f) => f in records.explorer));
+check('undetected surface: detected false, empty evidence, null strategy, UNKNOWN',
+  records.explorer.detected === false && eq(records.explorer.evidence, []) && records.explorer.strategy === null && records.explorer.confidence === 'UNKNOWN');
+check('confidence vocabulary is categorical only',
+  eq(Object.keys(K.CONFIDENCE), ['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH']));
+check('no numeric confidence anywhere in source', !/confidence:\s*0?\.\d+|confidence:\s*(9[0-9]|100)\b/.test(src));
+const caps = K.detectCapabilities(ad.observe());
+check('capabilities are booleans', Object.values(caps).every((v) => typeof v === 'boolean'));
+check('all capabilities false against the stub adapter', Object.values(caps).every((v) => v === false));
+check('record-valued adapter results do not invert to true',
+  eq(K.detectCapabilities({ editor: { detected: false, confidence: 'HIGH' }, explorer: { detected: true, confidence: 'HIGH' }, search: null, sourceControl: undefined, terminal: null }),
+    { editor: false, explorer: true, search: false, sourceControl: false, terminal: false }));
+check('sameCapabilities ignores ordering, honours values',
+  K.sameCapabilities({ a: true, b: false }, { b: false, a: true }) === true && K.sameCapabilities({ a: true }, { a: false }) === false);
+
+/* --------------------------- §18/§19 verification ------------------------- */
+section('Verification discipline (§18/§19)');
+const rec = (detected, confidence) => ({ surface: 'explorer', detected, evidence: [], strategy: null, confidence });
+check('no post-action observation → BLOCKED', K.verifyTransition(rec(true, 'HIGH'), null, 'open').status === 'BLOCKED');
+check('unobserved before is recorded as such', K.verifyTransition(null, rec(true, 'HIGH'), 'open').evidence.before === 'unobserved');
+check('UNKNOWN-confidence hit never verifies', K.verifyTransition(rec(false, 'UNKNOWN'), rec(true, 'UNKNOWN'), 'open').status === 'BLOCKED');
+check('MEDIUM-confidence hit never verifies', K.verifyTransition(rec(false, 'LOW'), rec(true, 'MEDIUM'), 'open').status === 'BLOCKED');
+check('HIGH-confidence open verifies', (() => {
+  const v = K.verifyTransition(rec(false, 'HIGH'), rec(true, 'HIGH'), 'open');
+  return v.status === 'VERIFIED' && v.evidence.before === 'closed' && v.evidence.after === 'open';
+})());
+check('HIGH-confidence close verifies', (() => {
+  const v = K.verifyTransition(rec(true, 'HIGH'), rec(false, 'HIGH'), 'closed');
+  return v.status === 'VERIFIED' && v.evidence.after === 'closed';
+})());
+check('wrong direction does not verify', K.verifyTransition(rec(false, 'HIGH'), rec(false, 'HIGH'), 'open').status === 'BLOCKED');
+check('status vocabulary is exactly the four allowed',
+  eq(Object.keys(K.STATUS), ['VERIFIED', 'PARTIALLY_VERIFIED', 'PROVISIONAL', 'BLOCKED']));
+check('no evidence → no verified claim (phrase present in source)', /NO EVIDENCE.*NO VERIFIED CLAIM/.test(src));
+
+/* ------------------------- §20 stabilization ----------------------------- */
+section('Bounded stabilization (§20)');
+check('defaults are the engineering parameters', K.STABILITY_TIMEOUT === 1000 && K.STABILITY_QUIET === 100);
+const stabilityResult = await K.waitForStability();
+check('resolves instead of hanging without a DOM', stabilityResult && stabilityResult.reason === 'no-dom');
+check('carries elapsed and mutations', typeof stabilityResult.elapsed === 'number' && typeof stabilityResult.mutations === 'number');
+const timeouted = await K.waitForStability({ timeout: 5, quiet: 50 });
+check('custom parameters are honoured (timeout path terminates)', timeouted.settled === false);
+
+/* --------------------------- §16/§17 actions ----------------------------- */
+section('Action engine contracts (§16/§17)');
+check('every command surface has open and close actions',
+  K.surfaceCommands.every(([surface]) => K.actions[`open-${surface}`] && K.actions[`close-${surface}`]));
+check('actions carry the six §17 fields', Object.keys(K.actions).every((id) => {
+  const a = K.actions[id];
+  return a.id === id && 'target' in a && typeof a.precondition === 'function' && typeof a.invoke === 'function'
+    && typeof a.verify === 'function' && typeof a.reversible === 'boolean';
+}));
+check('surface actions are reversible', K.actions['open-explorer'].reversible === true);
+check('focus-editor is not reversible (no state transition to undo)', K.actions['focus-editor'].reversible === false);
+check('preconditions refuse without evidence', K.actions['open-explorer'].precondition().ok === false);
+check('refusal keeps UNKNOWN as BLOCKED, not false', /capability-unknown/.test(K.actions['open-explorer'].precondition().reason));
+const unknown = await K.executeAction('not-a-real-action');
+check('unknown action → BLOCKED/unknown-action', unknown.status === 'BLOCKED' && unknown.reason === 'unknown-action');
+
+const recorded = [];
+const stubAdapter = {
+  id: 'stub', revision: 0,
+  detectEnvironment: () => true, observe: () => ({ explorer: null }),
+  resolveSurface: () => ({ status: 'BLOCKED', surface: 'explorer', reason: 'no mapping' }),
+  invoke: (a) => { recorded.push(`invoke:${a}`); return { status: 'BLOCKED', reason: 'no interaction' }; },
+  verify: (a) => ({ status: 'BLOCKED', action: a, reason: 'no contract' }),
+  restore: (s) => ({ status: 'PROVISIONAL', snapshot: s }),
+  findExplorer: () => null,
+};
+K.GMUX.state = { ...K.initialState, capabilities: { explorer: true } };
+K.__setAdapter(stubAdapter);
+const preBlocked = await K.executeAction('open-explorer');
+check('undetected capability blocks before any host call', preBlocked.status === 'BLOCKED' && eq(recorded, []));
+check('blocking keeps the reason visible', /capability|no mapping/.test(preBlocked.reason), preBlocked.reason);
+
+// Preconditions pass (detected + verified mapping) but the host refuses to act:
+// the engine must report BLOCKED and must not have touched the DOM.
+K.__setAdapter({
+  ...stubAdapter,
+  observe: () => ({ explorer: { detected: true, confidence: 'HIGH', strategy: 'aria', evidence: [{ type: 'aria-label', value: 'Explorer' }] } }),
+  resolveSurface: () => ({ status: 'VERIFIED', surface: 'explorer', reason: null }),
 });
-{
-  const pend = { cmd: 'openExplorer', expect: S.EXPLORER, t0, retried: false };
-  check('expected transition -> done (VALIDATED)', K.evaluatePending(pend, sidebarObs('explorer'), 1100).state === 'done');
-}
-{
-  const pend = { cmd: 'openSourceControl', expect: S.SOURCE_CONTROL, t0, retried: false };
-  check('wrong view still showing -> wait', K.evaluatePending(pend, sidebarObs('explorer'), 1100).state === 'wait');
-  check('after 1.2s -> one bounded retry', K.evaluatePending(pend, sidebarObs('explorer'), 2300).state === 'retry');
-  const expired = K.evaluatePending({ cmd: 'openSourceControl', expect: S.SOURCE_CONTROL, t0, retried: true }, sidebarObs('explorer'), 4300);
-  check('after 3.2s -> expired with correct code', expired.state === 'expired' && expired.code === K.FAIL.SOURCE_CONTROL_NOT_DETECTED);
-}
-{
-  const pend = { cmd: 'close', expect: S.EDITOR, t0, retried: false };
-  const closed = { parts: { sideBar: { visible: false }, quickInput: { visible: false } }, surfaces: { terminal: { visible: false } }, sidebarActiveView: null };
-  check('close validated when drawer gone', K.evaluatePending(pend, closed, 1100).state === 'done');
-}
+// Capabilities are DERIVED from observation, never asserted by the test (§15),
+// so the test drives one explicit reconciliation to derive them.
+K.GMUX.state = { ...K.initialState, capabilities: {} };
+K.reconcile();
+check('capabilities re-derive from the adapter observation',
+  K.GMUX.state.capabilities.explorer === true && K.GMUX.state.capabilities.editor === false,
+  JSON.stringify(K.GMUX.state.capabilities));
+check('a detected-but-unmapped-verify surface still passes the precondition',
+  K.actions['open-explorer'].precondition().ok === true);
+check('reconcile degrades safely when no shell could mount (§59)', K.GMUX.state.diagnostics.lastError === null);
+const refused = await K.executeAction('open-explorer');
+check('a refused invoke yields BLOCKED', refused.status === 'BLOCKED' && refused.reason === 'no interaction');
+check('invoke was asked through the adapter, not the DOM', eq(recorded, ['invoke:open-explorer']));
+check('a refused invoke never commits the surface', K.GMUX.state.surface === 'editor');
+check('a refused invoke clears the pending intent', K.GMUX.state.pendingAction === null);
+K.GMUX.state = null;
+const withheld = await K.requestSurface('explorer', 'open');
+check('§26 BLOCKED never reaches the host', withheld.status === 'BLOCKED' && withheld.attempted === false);
+check('§26 BLOCKED is not counted as an attempt', eq(recorded, ['invoke:open-explorer']));
+check('§26 BLOCKED explains itself', /no verified host mapping|capability-unknown/.test(withheld.reason));
+const badDirection = await K.requestSurface('editor', 'open');
+check('editor is not a host surface', badDirection.status === 'BLOCKED' && badDirection.reason === 'not-a-host-surface');
+K.__setAdapter(ad);
 
-/* ------------------------- reconcile planner (§24) ----------------------- */
-section('Reconcile planner (observe → normalize → decide)');
-function baseObs(over = {}) {
-  return Object.assign({
-    application: { detected: true },
-    surfaces: {
-      editor: { present: true, activeFile: { name: 'main.rs', uri: 'file:///src/main.rs' } },
-      explorer: { present: true, visible: false }, search: { present: true, visible: false },
-      sourceControl: { present: true, visible: false }, terminal: { present: false, visible: false, hostExpectation: 'likely-unsupported' },
-    },
-    parts: {
-      titlebar: { present: true, visible: true }, activityBar: { present: true },
-      sideBar: { present: true, visible: false }, panel: { present: true, visible: false },
-      statusBar: { present: true }, quickInput: { present: false, visible: false },
-    },
-    measured: { titlebarH: 30, statusbarH: 22 },
-    sidebarActiveView: null,
-    appSurface: 'editor',
-  }, over);
-}
-function baseState(over = {}) {
-  return Object.assign({
-    activeSurface: 'editor', previousSurface: null, lastFileKey: '', modal: null,
-    viewport: { width: 412, height: 732, offsetTop: 0 },
-  }, over);
-}
-{
-  const plan = K.planReconcile({ obs: baseObs(), state: baseState(), prefs: K.PREF_DEFAULTS, caps: {} });
-  check('412px plans MOBILE', plan.shellMode === 'mobile');
-  check('immersive on by default in mobile', plan.immersiveOn === true);
-  check('mobile workbench class planned', plan.workbenchAdd.indexOf('gmux-mode-mobile') !== -1);
-  check('header file surfaced', plan.headerFile === 'main.rs');
-  check('geometry vars emitted', plan.vars['--gmux-vv-height'] === '732' && plan.vars['--gmux-shell-top'] === '40px');
-}
-{
-  const plan = K.planReconcile({ obs: baseObs(), state: baseState(), prefs: K.PREF_DEFAULTS, caps: { terminal: K.CAP.NOT_DETECTED } });
-  check('terminal never advertised when feature flag off', plan.terminalEnabled === false);
-  check('terminal unavailability produces a note', plan.notes.some((n) => n.code === K.FAIL.TERMINAL_NOT_DETECTED));
-}
-{
-  const obs = baseObs({
-    parts: { titlebar: { present: true }, activityBar: { present: true }, sideBar: { present: true, visible: true }, panel: { present: true, visible: false }, statusBar: { present: true }, quickInput: { present: false, visible: false } },
-    sidebarActiveView: 'explorer', appSurface: 'explorer',
-  });
-  obs.surfaces.explorer.visible = true;
-  const plan = K.planReconcile({ obs, state: baseState(), prefs: K.PREF_DEFAULTS, caps: {} });
-  check('app-opened explorer adopted (DOM is evidence)', plan.adoptedFromApp === true && plan.activeSurface === 'explorer');
-  check('explorer raises drawer overlay', plan.workbenchAdd.indexOf('gmux-sidebar-overlay') !== -1);
-}
-{
-  const obs = baseObs({
-    parts: { titlebar: { present: true }, activityBar: { present: true }, sideBar: { present: true, visible: true }, panel: { present: true, visible: false }, statusBar: { present: true }, quickInput: { present: false, visible: false } },
-    sidebarActiveView: 'explorer', appSurface: 'explorer',
-  });
-  obs.surfaces.editor.activeFile = { name: 'agent.rs', uri: 'file:///src/agent.rs' };
-  const plan = K.planReconcile({ obs, state: baseState({ activeSurface: 'explorer', lastFileKey: 'file:///src/main.rs' }), prefs: K.PREF_DEFAULTS, caps: {} });
-  check('file selection in drawer -> editor (§31)', plan.fileSelected === true && plan.activeSurface === 'editor');
-}
-{
-  const obs = baseObs({ parts: { titlebar: { present: true }, activityBar: { present: true }, sideBar: { present: true, visible: false }, panel: { present: true, visible: false }, statusBar: { present: true }, quickInput: { present: true, visible: true } } });
-  const plan = K.planReconcile({ obs, state: baseState({ activeSurface: 'explorer' }), prefs: K.PREF_DEFAULTS, caps: {} });
-  check('quick input minimizes shell chrome', plan.shellMinimized === true);
-  check('quick input suppresses drawer overlay', plan.workbenchAdd.indexOf('gmux-sidebar-overlay') === -1);
-  check('quick input does not steal surface', plan.adoptedFromApp === false);
-}
-{
-  const plan = K.planReconcile({ obs: baseObs(), state: baseState({ viewport: { width: 1280, height: 800, offsetTop: 0 } }), prefs: K.PREF_DEFAULTS, caps: {} });
-  check('desktop mode removes header', plan.shellMode === 'desktop' && plan.rootAdd.indexOf('gmux-no-header') !== -1);
-  check('desktop mode removes bottom bar', plan.rootAdd.indexOf('gmux-no-footer') !== -1);
-}
-{
-  const prefs = Object.assign({}, K.PREF_DEFAULTS, { bottomBar: false });
-  const plan = K.planReconcile({ obs: baseObs(), state: baseState(), prefs, caps: {} });
-  check('bottomBar=false hides toolbar and keeps statusbar gap', plan.rootAdd.indexOf('gmux-no-footer') !== -1 && plan.vars['--gmux-shell-bottom'] === '22px');
-}
-{
-  const obs = baseObs({ appSurface: 'editor' });
-  const plan = K.planReconcile({ obs, state: baseState({ activeSurface: 'explorer' }), prefs: K.PREF_DEFAULTS, caps: {}, pending: { cmd: 'openExplorer' } });
-  check('pending command suppresses adoption until validated', plan.adoptedFromApp === false && plan.activeSurface === 'explorer');
-}
+/* ------------------------- §21 reconcile is inert early ------------------ */
+section('Reconciliation without state is inert (§21)');
+K.GMUX.state = null;
+check('reconcile with no state returns null', K.reconcile() === null);
+check('dispatch with no state is refused', K.dispatch({ type: A.BACK }) === false);
+check('installStyles is inert without a DOM', K.installStyles() === null);
+check('createShell is inert without a DOM', K.createShell() === null);
+check('installObserver is inert without a DOM', K.installObserver() === null);
+check('installViewportObserver is inert without a DOM', K.installViewportObserver() === null);
+check('teardown is inert without a DOM', K.teardown() === undefined);
 
-/* ----------------------- feature status honesty (§38) ------------------- */
-section('Diagnostics are evidence, not aspiration');
-{
-  const rows = K.computeFeatureStatuses({ caps: {}, stats: {}, vvUsed: null });
-  const map = Object.fromEntries(rows.map(([n, v]) => [n, v]));
-  check('Git operations OUT_OF_SCOPE', map['Git operations'].status === K.FSTATUS.OUT_OF_SCOPE);
-  check('Gestures OUT_OF_SCOPE for v0.1', map['Gesture navigation'].status === K.FSTATUS.OUT_OF_SCOPE);
-  check('Terminal surface OUT_OF_SCOPE under the v0.1 flag', map['Terminal surface'].status === K.FSTATUS.OUT_OF_SCOPE);
-  check('Unknown future DOM BLOCKED', map['Unknown future GitHub DOM'].status === K.FSTATUS.BLOCKED);
-  check('no evidence -> not VERIFIED (viewport)', map['Mobile viewport detection'].status !== K.FSTATUS.VERIFIED);
-  check('no evidence -> not VERIFIED (explorer)', map['Explorer drawer'].status !== K.FSTATUS.VERIFIED);
-}
-{
-  const rows = K.computeFeatureStatuses({ caps: { explorer: K.CAP.DETECTED }, stats: { explorerValidated: true, viewportApplied: true }, vvUsed: 'visualViewport' });
-  const map = Object.fromEntries(rows.map(([n, v]) => [n, v]));
-  check('validated transition -> VERIFIED', map['Explorer drawer'].status === K.FSTATUS.VERIFIED);
-  check('applied viewport -> VERIFIED', map['Mobile viewport detection'].status === K.FSTATUS.VERIFIED);
-}
+/* ---------------------------- §37 preferences ---------------------------- */
+section('Defensive preference loading (§37)');
+check('defaults are the §37 field set',
+  eq(Object.keys(K.PREF_DEFAULTS).sort(), ['bottomBar', 'disabled', 'immersive', 'mode', 'preferredSurface', 'version'].sort()));
+check('defaults are frozen', Object.isFrozen(K.PREF_DEFAULTS));
+const stored = K.loadPreferences();
+check('storage-unavailable is reported, not thrown', stored.issues.some((i) => /storage-unavailable/.test(i)));
+check('defaults survive an unavailable store', stored.prefs.mode === 'auto' && stored.prefs.immersive === true && stored.prefs.bottomBar === true);
+check('corrupt storage never blocks the host: no throw path', stored.prefs.version === 1);
 
-/* ------------------------------ summary ---------------------------------- */
+/* ---------------------------- §26 command set ---------------------------- */
+section('Surface commands (§26)');
+check('exactly the four initial commands', eq(K.surfaceCommands, [['explorer', 'Files'], ['search', 'Search'], ['sourceControl', 'Git'], ['terminal', 'Terminal']]));
+check('no command claims a host selector',
+  !K.surfaceCommands.some(([surface, label]) => /[.#[]/.test(surface + label)));
+
+/* ------------------------- §57/§58 diagnostics --------------------------- */
+section('Diagnostics expose uncertainty (§57/§58)');
+K.GMUX.state = { ...K.initialState };
+K.GMUX.adapter = ad;
+const report = K.buildReport();
+check('report carries the §58 field list', ['GMUX version', 'adapter id', 'adapter revision', 'hostname', 'viewport',
+  'orientation', 'pointer type', 'touch points', 'mode', 'keyboard', 'capabilities', 'shell mounted', 'style mounted',
+  'observer installed', 'reconciliation count', 'observation count', 'last error', 'kill switch', 'host fingerprint']
+  .every((label) => report.fields.some((f) => f.label === label)));
+check('every field is labelled with its claim kind',
+  report.fields.every((f) => Object.values(K.KIND).includes(f.kind)));
+check('keyboard field is HEURISTIC, never OBSERVED',
+  report.fields.find((f) => f.label === 'keyboard').kind === 'HEURISTIC');
+check('orientation/mode/capabilities are DERIVED',
+  ['orientation', 'mode', 'capabilities', 'host fingerprint', 'compatibility'].every((l) => report.fields.find((f) => f.label === l).kind === 'DERIVED'));
+check('viewport/pointer/touch are OBSERVED',
+  ['viewport', 'pointer type', 'touch points', 'hostname'].every((l) => report.fields.find((f) => f.label === l).kind === 'OBSERVED'));
+check('observer entries are PROVISIONAL',
+  ['observer installed', 'viewport observer'].every((l) => report.fields.find((f) => f.label === l).kind === 'PROVISIONAL'));
+check('surfaces report detection and operation separately',
+  Object.values(report.surfaces).every((s) => 'detection' in s && 'operation' in s && 'confidence' in s));
+check('operation is BLOCKED while the adapter is revision 0',
+  Object.values(report.surfaces).every((s) => s.operation === 'BLOCKED'));
+check('compatibility cannot be claimed above BLOCKED at revision 0',
+  report.fingerprint.compatibility === 'BLOCKED');
+check('fingerprint is hex-ish and short', /^[0-9a-f]{8}$/.test(report.fingerprint.value));
+check('fingerprint is deterministic', K.hostFingerprint(K.observeSurfaces(ad).records).value === report.fingerprint.value);
+check('fingerprint changes with adapter revision',
+  K.hostFingerprint(K.observeSurfaces(ad).records).value !== K.hostFingerprint({ editor: { detected: true, confidence: 'HIGH', evidence: [], strategy: 'aria', surface: 'editor' } }).value);
+const text = K.formatReport(report);
+check('formatted report includes the kind labels', /OBSERVED/.test(text) && /DERIVED/.test(text) && /HEURISTIC/.test(text) && /PROVISIONAL/.test(text));
+check('formatted report states the intentional gap', /Adapter revision 0 is intentional/.test(text));
+check('report never claims VERIFIED for a surface', !/VERIFIED/.test(text.replace(/PARTIALLY_VERIFIED/g, '')));
+K.GMUX.state = null;
+
+/* ------------------------- §3 hard-constraint scan ------------------------ */
+section('Hard constraints (§3/§4) — static scan of the artifact');
+const metaBlock = (src.match(/==UserScript==([\s\S]*?)==\/UserScript==/) || [])[1] || '';
+const meta = {};
+metaBlock.split('\n').forEach((line) => {
+  const m = line.match(/@(\w[\w-]*)\s+(.+)/);
+  if (m) meta[m[1]] = m[2].trim();
+});
+check('@name is exact', meta.name === 'GitHub.dev Mobile UX');
+check('@namespace is github-dev-mobile', meta.namespace === 'github-dev-mobile');
+check('@version is 0.1.0', meta.version === '0.1.0');
+check('@description is exact', meta.description === 'Mobile interaction layer for github.dev');
+check('@match is exactly https://github.dev/*',
+  (metaBlock.match(/@match\s+(\S+)/g) || []).length === 1 && meta.match === 'https://github.dev/*');
+check('@run-at is document-idle', meta['run-at'] === 'document-idle');
+check('@grant is none', meta.grant === 'none');
+check('no extra metadata directives beyond the frozen block',
+  eq(Object.keys(meta).sort(), ['description', 'match', 'name', 'namespace', 'run-at', 'version'].concat(['grant']).sort()),
+  Object.keys(meta).join(','));
+for (const [label, re] of [
+  ['@require', /@require\b/], ['@resource', /@resource\b/], ['@connect', /@connect\b/],
+  ['GM_xmlhttpRequest', /GM_xmlhttpRequest|GM\.xmlhttpRequest/],
+  ['fetch(', /\bfetch\s*\(/], ['XMLHttpRequest', /XMLHttpRequest/], ['WebSocket', /WebSocket/],
+  ['EventSource', /EventSource/], ['sendBeacon', /sendBeacon/], ['import(', /\bimport\s*\(/],
+  ['iframe', /\biframe\b|createElement\(["']iframe/i],
+  ['Monaco internals', /monaco\.|getEditors|ICodeEditor|ITextModel|\.getModel\(\)|editor\.getOption/],
+  ['framework globals', /\bReact\b|\bReactDOM\b|\bVue\b|Svelte|\bangular\b|jQuery|\b_\b\s*=\s*require/],
+  ['git commands', /git\s+(commit|push|pull|merge|rebase|checkout|stash)/i],
+  ['setInterval', /setInterval/], ['timeout loop', /setTimeout\(\s*function\s+tick|requestAnimationFrame\([^)]*\)\s*;?\s*\}\s*\)/],
+  ['direct host click', /\.click\(\)/], ['pushState', /pushState/], ['replaceState', /replaceState/],
+  ['history.go/back', /history\.(go|back|forward)\s*\(/],
+  ['innerHTML write', /\.innerHTML\s*=/], ['document.write', /document\.write/],
+  ['userAgent', /userAgent/], ['cookie access', /document\.cookie/],
+  ['document.referrer', /document\.referrer/], ['navigator.clipboard in runtime', /navigator\.clipboard/],
+  ['storage of host truth', /localStorage\.setItem\(\s*["'](?!github-dev-mobile:v1)/],
+  ['global leak', /globalThis\.[A-Za-z_$]/],
+]) {
+  check(`forbidden in executable code: ${label}`, !re.test(code), re.source);
+}
+for (const [label, re] of [['@require', /@require\b/], ['@resource', /@resource\b/], ['@connect', /@connect\b/]]) {
+  check(`forbidden in metadata: ${label}`, !re.test(metaBlock), re.source);
+}
+check('comments state the network contract', /no network request/.test(src));
+check('selector-free kernel: no host CSS classes in source',
+  !/monaco-workbench|action-label|activitybar|part\.sidebar|part\.panel|explorer-folders-view|inputarea|view-lines|editorGroupHeader|tabs-container|quick-input|statusbar/.test(src));
+check('no host element ids in source', !/workbench\.[a-z]+\.[a-z]+/i.test(src));
+check('exactly one @match and it is the frozen pattern', !/@match\s+https:\/\/\*/.test(src));
+check('ownership marker is present in source and CSS', (src.match(/data-gmux-owner/g) || []).length >= 2);
+check('style marker is data-gmux-style', /data-gmux-style/.test(src));
+check('element ids created via .id= are gmux-prefixed',
+  (src.match(/\.id\s*=\s*["'`]([^"'`]+)["'`]/g) || []).every((m) => /gmux-|\$\{/.test(m)), (src.match(/\.id\s*=\s*["'`]([^"'`]+)["'`]/g) || []).join('|'));
+check('CSS avoids universal selectors', !/[^-\w]\*\s*\{/.test(code));
+check('CSS avoids !important', !/!important/.test(code));
+check('no global overflow suppression', !/body\s*\{[^}]*overflow\s*:\s*hidden/.test(code));
+check('no style writes to host nodes', !/document\.body\.style|documentElement\.style/.test(code));
+check('the artifact explains its own hygiene', /no !important/.test(src));
+check('safe-area insets are used (§33)', /env\(safe-area-inset-top/.test(src) && /env\(safe-area-inset-bottom/.test(src));
+check('touch target constant is 44 (§34)', K.TOUCH_TARGET === 44);
+check('storage key is the frozen one (§37)', K.STORAGE_KEY === 'github-dev-mobile:v1');
+check('kill switch checks both mechanisms (§38)', /KILL_PARAM_OFF/.test(src) && /prefs\.disabled/.test(src));
+
+/* ------------------------------ summary --------------------------------- */
 console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) {
-  console.error('\nFailures:');
-  failures.forEach((f) => console.error(` - ${f}`));
-  process.exit(1);
+if (failed) {
+  console.error('failures:\n' + failures.map((f) => `  - ${f}`).join('\n'));
+  process.exitCode = 1;
+} else {
+  console.log('Kernel suite green. Live github.dev behavior is NOT claimed here (see VERIFICATION_REPORT.md).');
 }
-console.log('Kernel unit suite green. Live-runtime matrix: VERIFICATION_REPORT.md');

@@ -1,5 +1,34 @@
 # DOM Evidence Log — `github.dev` / VS Code for the Web
 
+> ## ⚠️ Status of this file (read first)
+>
+> **These observations are *candidate inputs for Phase B review*. They are not runtime
+> knowledge.** Pack §12/§13/§72 forbid GitHub/VS Code selectors, Monaco selectors, host
+> element ids and host DOM hierarchy inside `github-dev-mobile.user.js`, and the shipped
+> runtime contains none of them (statically verified: `node tests/gates.mjs`).
+>
+> Consequences of that boundary:
+>
+> * Nothing below is *used* by v0.1. It stays here as prior observation so Phase B can
+>   confirm, refute or re-rank it — not as a selector bank to copy from.
+> * The correct instrument for collecting current structure is `gmux-recon.user.js`
+>   (`GMUXRecon.run()` on a live session); see [`recon-guide.md`](recon-guide.md).
+> * Promotion path for any entry below: `candidate → human review → adapter definition →
+>   fixture → interaction verification → release gate` (§50). A selector is evidence, not
+>   truth; detection is not operation and operation is not validation.
+> * **Correction to §1 below:** the "Implication" paragraph records host detection
+>   accepting `*.github.dev` and `vscode.dev/github/*`. That was the *previous*
+>   implementation's widened scope, which pack §4 supersedes: v0.1 matches
+>   `https://github.dev/*` only, and `github.dev` is the host source of truth. The
+>   redirect question is recorded as an open item in
+>   [`../VERIFICATION_REPORT.md`](../VERIFICATION_REPORT.md) §9 and
+>   [`verification.md`](verification.md) §5 — to be settled by a live browser check, not
+>   by inference.
+> * Entries below marked `OBSERVED` were read from a fetched page or from
+>   `microsoft/vscode` sources on the stated date; none is `VALIDATED`, and none may be
+>   relabelled `VALIDATED` without the §49 interaction procedure plus a §54 golden-state
+>   pass on a real session.
+
 This file is the observation record behind every adapter selector. SPEC
 §58 rules 1/4 require inspecting before modifying and forbid inventing
 selectors without inspection evidence; if a selector here cannot be
